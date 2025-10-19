@@ -13,7 +13,7 @@ from . import agents
 
 
 gym.register(
-    id="Template-Jetauto-Navigation-Direct-v0",
+    id="Jetauto-Navigation-Direct-v0",
     entry_point=f"{__name__}.jetauto_navigation_env:JetautoNavigationEnv",
     disable_env_checker=True,
     kwargs={
