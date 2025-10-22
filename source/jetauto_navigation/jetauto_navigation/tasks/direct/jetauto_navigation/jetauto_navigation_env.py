@@ -39,12 +39,14 @@ class JetautoNavigationEnv(DirectRLEnv):
     def __init__(self, cfg: JetautoNavigationEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        # self.cfg.env_params = self.cfg.env_params
+
         self._hist_len = 4
         self._feat_hist = torch.zeros(self.num_envs, self._hist_len, 512, device=self.device)
 
-        self.v_xy_max = 0.6  # m/s
-        self.w_z_max = 1.5  # rad/s
-        self.v_smooth = 0.2  # [0~1] 越大越稳
+        self.v_xy_max = self.cfg.env_params.motion.v_xy_max  # m/s
+        self.w_z_max = self.cfg.env_params.motion.w_z_max  # rad/s
+        self.v_smooth = self.cfg.env_params.motion.v_smooth  # [0~1] 越大越稳
         self._v_cmd_body = torch.zeros((self.num_envs, 3), device=self.device)  # [vx,vy,0]
         self._w_cmd = torch.zeros((self.num_envs,), device=self.device)  # wz
 
@@ -81,17 +83,24 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         self.robot_a = Articulation(self.cfg.robot_cfg.replace(prim_path="/World/envs/env_.*/Robot_A"))
         self.scene.articulations["robot_a"] = self.robot_a
+        # print("robot A bbox size:", (self.robot_a.data.bounding_box_max - self.robot_a.data.bounding_box_min)[0])
 
-
+        # === 读配置 ===
+        w = self.cfg.env_params.walls
+        t = self.cfg.env_params.target
+        o = self.cfg.env_params.obstacle
+        c = self.cfg.env_params.camera
+        offset_x = self.cfg.env_params.reset.room_b_offset_x
         # 房间 A 围墙
-        wall_size = (3.0, 0.1, 0.4)
-        wall_size_vert = (0.1, 3.0, 0.4)
-        wall_z = wall_size[2] / 2
+        # wall_size = (3.0, 0.1, 0.4)
+        # wall_size_vert = (0.1, 3.0, 0.4)
+        # wall_z = wall_size[2] / 2
+        wall_z = w.size[2] / 2
         walls_a = [
-            {"name": "RoomA_Wall_N", "pos": (0.0, 1.5, wall_z), "size": wall_size},
-            {"name": "RoomA_Wall_S", "pos": (0.0, -1.5, wall_z), "size": wall_size},
-            {"name": "RoomA_Wall_E", "pos": (1.5, 0.0, wall_z), "size": wall_size_vert},
-            {"name": "RoomA_Wall_W", "pos": (-1.5, 0.0, wall_z), "size": wall_size_vert},
+            {"name": "RoomA_Wall_N", "pos": (0.0, 1.5, wall_z), "size": w.size},
+            {"name": "RoomA_Wall_S", "pos": (0.0, -1.5, wall_z), "size": w.size},
+            {"name": "RoomA_Wall_E", "pos": (1.5, 0.0, wall_z), "size": w.size_vert},
+            {"name": "RoomA_Wall_W", "pos": (-1.5, 0.0, wall_z), "size": w.size_vert},
         ]
         for wall in walls_a:
             cfg = RigidObjectCfg(
@@ -109,16 +118,16 @@ class JetautoNavigationEnv(DirectRLEnv):
             self.scene.rigid_objects[wall['name'].lower()] = RigidObject(cfg)
 
 
-        if not hasattr(self, "_static_target_pos"):
-            self.target_size = (0.2, 0.2, 0.2)
-            self.obstacle_size = (0.1, 0.1, 0.1)
+        # if not hasattr(self, "_static_target_pos"):
+        #     self.target_size = (0.2, 0.2, 0.2)
+        #     self.obstacle_size = (0.1, 0.1, 0.1)
 
         # 房间 A 目标
-        target_half_h = self.target_size[2] / 2
+        target_half_h = t.size[2] / 2
         target_cfg_a = RigidObjectCfg(
             prim_path="/World/envs/env_.*/Target_A",
             spawn=sim_utils.CuboidCfg(
-                size=self.target_size,
+                size=t.size,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -133,12 +142,12 @@ class JetautoNavigationEnv(DirectRLEnv):
 
 
         # 房间 A 障碍物
-        obstacle_size = (0.1, 0.1, 0.1)
-        half_height = obstacle_size[2] / 2
+        # obstacle_size = (0.1, 0.1, 0.1)
+        half_height = o.size[2] / 2
         obstacle_cfg = RigidObjectCfg(
             prim_path="/World/envs/env_.*/Obstacle",
             spawn=sim_utils.CuboidCfg(
-                size=obstacle_size,
+                size=o.size,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -156,15 +165,16 @@ class JetautoNavigationEnv(DirectRLEnv):
             # prim_path="/World/envs/env_.*/Robot_A/base_link/visuals/Kaya_Body_Collapsed/kaya_camera",
             prim_path="/World/envs/env_.*/Robot_A/base_footprint/visuals/depth_camera_link/Camera",
             update_period=0.0167,
-            height=320, width=320,
+            height=c.height, width=c.width,
+            # height=320, width=320,
             data_types=["rgb","semantic_segmentation"],
             colorize_semantic_segmentation=False,
             spawn = sim_utils.PinholeCameraCfg(),
             # spawn = None,
             offset=CameraCfg.OffsetCfg(
-                pos=(0.0, -0.1, 0.0), 
-                # rot=(0.0, 0.0, 0.7071, 0.7071), 
-                rot=(0.0, 0.0, 0.60876, 0.79335), 
+                pos=(0.0, -0.1, 0.0),
+                # rot=(0.0, 0.0, 0.7071, 0.7071),
+                rot=(0.0, 0.0, 0.60876, 0.79335),
                 convention="parent"
             )
         )
@@ -172,7 +182,7 @@ class JetautoNavigationEnv(DirectRLEnv):
         self.scene.sensors["camera_a"] = self._camera_a
 
         # ---------------- 房间 B: 向 X 轴偏移 3 米 ----------------
-        offset_x = 3.0
+        # offset_x = 3.0
 
         # 机器人 B
         self.robot_b = Articulation(self.cfg.robot_cfg.replace(prim_path="/World/envs/env_.*/Robot_B"))
@@ -180,10 +190,10 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         # 房间 B 围墙
         walls_b = [
-            {"name": "RoomB_Wall_N", "pos": (offset_x, 1.5, wall_z), "size": wall_size},
-            {"name": "RoomB_Wall_S", "pos": (offset_x, -1.5, wall_z), "size": wall_size},
-            {"name": "RoomB_Wall_E", "pos": (offset_x + 1.5, 0.0, wall_z), "size": wall_size_vert},
-            {"name": "RoomB_Wall_W", "pos": (offset_x - 1.5, 0.0, wall_z), "size": wall_size_vert},
+            {"name": "RoomB_Wall_N", "pos": (offset_x, 1.5, wall_z), "size": w.size},
+            {"name": "RoomB_Wall_S", "pos": (offset_x, -1.5, wall_z), "size": w.size},
+            {"name": "RoomB_Wall_E", "pos": (offset_x + 1.5, 0.0, wall_z), "size": w.size_vert},
+            {"name": "RoomB_Wall_W", "pos": (offset_x - 1.5, 0.0, wall_z), "size": w.size_vert},
         ]
         for wall in walls_b:
             cfg = RigidObjectCfg(
@@ -204,7 +214,7 @@ class JetautoNavigationEnv(DirectRLEnv):
         target_cfg_b = RigidObjectCfg(
             prim_path="/World/envs/env_.*/Target_B",
             spawn=sim_utils.CuboidCfg(
-                size=self.target_size,
+                size=t.size,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -221,18 +231,19 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         # 相机 B
         cam_cfg_b = CameraCfg(
-            # prim_path="/World/envs/env_.*/Robot_B/base_link/visuals/Kaya_Body_Collapsed/kaya_camera", 
+            # prim_path="/World/envs/env_.*/Robot_B/base_link/visuals/Kaya_Body_Collapsed/kaya_camera",
             prim_path="/World/envs/env_.*/Robot_B/base_footprint/visuals/depth_camera_link/Camera",
             update_period=0.0167,
-            height=320, width=320,
+            height=c.height, width=c.width,
+            # height=320, width=320,
             data_types=["rgb", "semantic_segmentation"],
             colorize_semantic_segmentation=False,
             spawn=sim_utils.PinholeCameraCfg(),
             # spawn = None,
             offset=CameraCfg.OffsetCfg(
-                pos=(0.0, -0.1, 0.0), 
-                # rot=(0.0, 0.0, 0.7071, 0.7071), 
-                rot=(0.0, 0.0, 0.60876, 0.79335), 
+                pos=(0.0, -0.1, 0.0),
+                # rot=(0.0, 0.0, 0.7071, 0.7071),
+                rot=(0.0, 0.0, 0.60876, 0.79335),
                 convention="parent"
             )
         )
@@ -245,21 +256,6 @@ class JetautoNavigationEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-
-    # def _visualize_markers(self):
-    #     self.marker_locations = self.robot_a.data.root_pos_w
-    #     self.forward_marker_orientations = self.robot_a.data.root_quat_w
-    #     self.command_marker_orientations = math_utils.quat_from_angle_axis(self.yaws, self.up_dir).squeeze()
-
-    #     loc = self.marker_locations + self.marker_offset
-    #     loc = torch.vstack((loc, loc))
-    #     rots = torch.vstack((self.forward_marker_orientations, self.command_marker_orientations))
-
-    #     all_envs = torch.arange(self.cfg.scene.num_envs)
-    #     indices = torch.hstack((torch.zeros_like(all_envs), torch.ones_like(all_envs)))
-
-    #     self.visualization_markers.visualize(loc, rots, marker_indices=indices)
-
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone().clamp(-1.0, 1.0)
 
@@ -270,6 +266,8 @@ class JetautoNavigationEnv(DirectRLEnv):
     # 放在类里，与 _apply_action 平级
     def _lock_planar(self, robot, z_lock: float = 0.09105) -> None:
         """锁定在平面：z=z_lock，去掉 pitch/roll，仅保留 yaw。"""
+        if z_lock is None:
+            z_lock = self.cfg.env_params.motion.planar_z_lock
         # 改高度
         pos = robot.data.root_pos_w.clone()  # (N,3)
         pos[:, 2] = z_lock
@@ -313,8 +311,12 @@ class JetautoNavigationEnv(DirectRLEnv):
         _apply(self.robot_b)
 
         # 仅在最后做一次平面锁定
-        self._lock_planar(self.robot_a, 0.09105)
-        self._lock_planar(self.robot_b, 0.09105)
+        self._lock_planar(self.robot_a,0.01)
+        # self._lock_planar(self.robot_a, 0.01)
+        # self._lock_planar(self.robot_a, 0.09105)
+        self._lock_planar(self.robot_b,0.01)
+        # self._lock_planar(self.robot_b, 0.01)
+        # self._lock_planar(self.robot_b, 0.09105)
 
     def _get_observations(self) -> dict:
 
@@ -389,18 +391,23 @@ class JetautoNavigationEnv(DirectRLEnv):
         env_xy = self.scene.env_origins[:, :2]
         robot_local = robot_xy - env_xy
 
-        print("Robot local XYZ:", self.robot_a.data.root_pos_w[:, :3]-self.scene.env_origins[:, :3])
+        # print("Robot local XYZ:", self.robot_a.data.root_pos_w[:, :3]-self.scene.env_origins[:, :3])
 
-        arena_half = getattr(self, "_arena_half", 1.25)
-        wall_collision = (torch.abs(robot_local) > (arena_half)).any(dim=-1)
+        room_half = 1.5  #TODO change to cfg
+        wall_margin = self.cfg.env_params.walls.wall_margin
+        wall_collision = (torch.abs(robot_local) > (room_half - wall_margin)).any(dim=-1)
 
-        if hasattr(self, "_obstacles") and len(self._obstacles) > 0:
-            obs_xy = torch.stack([obs.data.root_pos_w[:, :2] for obs in self._obstacles], dim=1)
-            dist_to_obs = torch.norm(robot_xy.unsqueeze(1) - obs_xy, dim=-1)
-            obs_collision = (dist_to_obs < 0.20).any(dim=1)
-        else:
-            obs_collision = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
+        # 所有障碍物在 self._obstacles 列表中
+        obs_xy = torch.stack([obs.data.root_pos_w[:, :2] for obs in self._obstacles], dim=1)  # [num_envs, num_obs, 2]
+        dist_to_obs = torch.norm(robot_xy.unsqueeze(1) - obs_xy, dim=-1)  # [num_envs, num_obs]
+        obs_collision = (dist_to_obs < (self.cfg.env_params.obstacle.r + self.cfg.env_params.robot_r)).any(dim=1)
+
+        # if wall_collision.sum().item() > 0:
+        #     print("Wall collision detected!")
+        # if obs_collision.sum().item() > 0:
+        #     print("Obstacle collision detected!")
+        
         # print("Wall collisions:", wall_collision.sum().item(), "Obstacle collisions:", obs_collision.sum().item())
 
         self.collision_mask = wall_collision | obs_collision
@@ -412,8 +419,10 @@ class JetautoNavigationEnv(DirectRLEnv):
             # "rgb": rgb_a  # 如需调试可保留，但 skrl 只会取 policy/critic
         }
 
-    def _mask_touches_edge(self, mask, border_width=5):
+    def _mask_touches_edge(self, mask, border_width=None):
         """判断掩码是否触碰到图像边缘"""
+        if border_width is None:
+            border_width = int(self.cfg.env_params.reset.mask_edge_width)
         h, w = mask.shape[-2:]
         top = mask[..., :border_width, :].any(dim=(-2, -1))
         bottom = mask[..., -border_width:, :].any(dim=(-2, -1))
@@ -479,134 +488,19 @@ class JetautoNavigationEnv(DirectRLEnv):
         # 截断（超时）
         truncated = self.episode_length_buf >= self.max_episode_length - 1
 
+
+        if truncated.sum().item() > 0:
+            print("Episode truncated!")
+        if success.sum().item() > 0:
+            print("Episode success!")
+        if failed.sum().item() > 0:
+            print("Episode failed due to collision!")
+        
+
         # print("Terminated:", terminated.sum().item(), "Success:", success.sum().item(), "Failed:", failed.sum().item(), "Truncated:", truncated.sum().item())
 
 
         return terminated, truncated
-
-
-    # def _reset_idx(self, env_ids: Sequence[int] | None = None):
-
-    #     super()._reset_idx(env_ids)
-    #     if env_ids is None:
-    #         env_ids = torch.arange(self.num_envs, device=self.device)
-
-    #     # 参数：最小安全距离,考虑到障碍物具体的大小
-    #     min_dist = 0.5
-    #     # 缓冲清零
-    #     self._feat_hist[env_ids] = 0.0
-
-    #     # 重置机器人位置和朝向（放置到环境中心，速度清零）
-    #     root_states = self.robot_a.data.default_root_state[env_ids].clone()
-    #     root_states[:, :3] += self.scene.env_origins[env_ids]  # 设置位置为环境原点
-    #     self.robot_a.write_root_pose_to_sim(root_states[:, :7], env_ids=env_ids)
-    #     self.robot_a.write_root_velocity_to_sim(root_states[:, 7:], env_ids=env_ids)
-
-    #     root_states_b = self.robot_b.data.default_root_state[env_ids].clone()
-    #     root_states_b[:, :3] += self.scene.env_origins[env_ids]  # 设置位置为环境原点
-    #     root_states_b[:, 0] += 3.0
-    #     self.robot_b.write_root_pose_to_sim(root_states_b[:, :7], env_ids=env_ids)
-    #     self.robot_b.write_root_velocity_to_sim(root_states_b[:, 7:], env_ids=env_ids)
-
-    #     # 重置机器人的关节（轮子）位置和速度
-    #     joint_pos_a = self.robot_a.data.default_joint_pos[env_ids].clone()
-    #     joint_vel_a = torch.zeros_like(joint_pos_a)
-    #     self.robot_a.set_joint_position_target(joint_pos_a, env_ids=env_ids)
-    #     self.robot_a.write_joint_state_to_sim(joint_pos_a, joint_vel_a, env_ids=env_ids)
-
-    #     joint_pos_b = self.robot_b.data.default_joint_pos[env_ids].clone()
-    #     joint_vel_b = torch.zeros_like(joint_pos_b)
-    #     self.robot_b.set_joint_position_target(joint_pos_b, env_ids=env_ids)
-    #     self.robot_b.write_joint_state_to_sim(joint_pos_b, joint_vel_b, env_ids=env_ids)
-    #     # 随机重置目标
-
-
-    #     # 获取机器人位置和朝向
-    #     root_states = self.robot_a.data.root_state_w[env_ids].clone()
-    #     robot_pos = root_states[:, 0:3]  # (N,3)
-    #     robot_quat = root_states[:, 3:7]  # (N,4)
-
-    #     # 计算“前方偏移”（这里 0.8m）
-    #     forward_offset = torch.tensor([0.8, 0.0, 0.0], device=self.device).repeat(len(env_ids), 1)
-
-    #     # 把 offset 从机器人坐标系旋转到世界系
-    #     forward_world = math_utils.quat_apply(robot_quat, forward_offset)
-
-    #     # 设置目标位置：机器人位置 + 偏移 + 高度
-    #     # ---------------------
-    #     # 目标：放在 Jetbot 前方 + 随机扰动
-    #     # ---------------------
-    #     target_state = self._target_a.data.default_root_state[env_ids].clone()
-    #     target_state_b = self._target_a.data.default_root_state[env_ids].clone()
-
-    #     # Jetbot 初始位置
-    #     robot_pos = root_states[:, 0:3]
-
-    #     # 基础前方位置 (比如 0.8 m 前方)
-    #     base_forward = torch.tensor([0.8, 0.0, 0.0], device=self.device).repeat(len(env_ids), 1)
-
-    #     # 加入随机扰动（左右 ±0.2m，前后 ±0.1m，高度不变）
-    #     noise = torch.zeros_like(base_forward)
-    #     noise[:, 0] = (torch.rand(len(env_ids), device=self.device) - 0.5) * 0.2  # 前后
-    #     noise[:, 1] = (torch.rand(len(env_ids), device=self.device) - 0.5) * 0.4  # 左右
-
-    #     target_pos = robot_pos + base_forward + noise
-    #     target_pos[:, 2] = target_state[:, 2]  # 保持原始高度
-
-    #     target_state[:, 0:3] = target_pos
-    #     target_state_b[:, 0:3] = target_pos
-    #     target_state_b[:, 0] += 3.0
-
-    #     self._target_a.write_root_pose_to_sim(target_state[:, :7], env_ids=env_ids)
-    #     self._target_a.write_root_velocity_to_sim(target_state[:, 7:], env_ids=env_ids)
-
-    #     self._target_b.write_root_pose_to_sim(target_state_b[:, :7], env_ids=env_ids)
-    #     self._target_b.write_root_velocity_to_sim(target_state_b[:, 7:], env_ids=env_ids)
-
-
-    #     # target_state = self._target.data.default_root_state[env_ids].clone()
-    #     # target_state[:, 0:3] = robot_pos + forward_world
-    #     # self._target.write_root_pose_to_sim(target_state[:, :7], env_ids=env_ids)
-    #     # self._target.write_root_velocity_to_sim(target_state[:, 7:], env_ids=env_ids)
-
-    #     # target_state = self._target.data.default_root_state[env_ids].clone()
-    #     # rand_xy = torch.rand((len(env_ids), 2), device=self.device) * 2.0 - 1.0
-    #     # rand_xy *= 0.8
-    #     # target_xy = self.scene.env_origins[env_ids][:, 0:2] + rand_xy
-    #     # # target_state[:, 0:2] = target_xy
-    #     # self._target.write_root_pose_to_sim(target_state[:, :7], env_ids=env_ids)
-    #     # self._target.write_root_velocity_to_sim(target_state[:, 7:], env_ids=env_ids)
-
-    #     # ---------------------
-    #     # 障碍物：放在 Jetbot -> Target 方向上，带扰动
-    #     # ---------------------
-
-    #     # ---- 3. 放置障碍物 ----
-    #     blocker = self._obstacles[0]
-    #     blocker_state = blocker.data.default_root_state[env_ids].clone()
-
-    #     direction = target_pos - robot_pos
-    #     direction_xy = direction[:, :2]
-    #     dist = torch.norm(direction_xy, dim=-1, keepdim=True)
-    #     unit_dir = direction_xy / (dist + 1e-6)
-
-    #     # 障碍位于 30%~70% 之间
-    #     alpha = 0.3 + 0.4 * torch.rand(len(env_ids), 1, device=self.device)
-    #     base_blocker_pos = robot_pos[:, :2] + alpha * direction_xy
-
-    #     # 横向扰动 ±0.1m
-    #     perp = torch.stack([-unit_dir[:, 1], unit_dir[:, 0]], dim=1)
-    #     lateral_offset = (torch.rand(len(env_ids), 1, device=self.device) - 0.5) * 0.2 * perp
-    #     base_blocker_pos += lateral_offset.squeeze(1)
-
-    #     blocker_state[:, 0:2] = base_blocker_pos
-    #     blocker.write_root_pose_to_sim(blocker_state[:, :7], env_ids)
-    #     blocker.write_root_velocity_to_sim(blocker_state[:, 7:], env_ids)
-
-    #     # ---- 4. 清零状态 ----
-    #     self.collision_mask[env_ids] = False
-    #     self.curr_vis[env_ids] = 0.0
-    #     self.prev_vis[env_ids] = 0.0
 
 
 
@@ -615,42 +509,69 @@ class JetautoNavigationEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
+        
 
-        # 参数：最小安全距离,考虑到障碍物具体的大小
-        min_dist = 0.1
-        arena_half = 1.4 
-
+        # jetauto目测长34厘米 宽22厘米
+        # 机器人中心到四个角 = (0.17^2 + 0.11^2) ^ 0.5  # 约20cm
 
         if not hasattr(self, "_static_target_pos"):
             # 只在第一次初始化时设置
-            self._static_target_pos = torch.tensor([0.8, 0.0, 0.1], device=self.device).repeat(self.num_envs, 1)
-            self._static_obstacle_pos = torch.tensor([0.4, 0.0, 0.05], device=self.device).repeat(self.num_envs, 1)
+            self._static_target_pos = torch.tensor([1.0, 1.0, self.cfg.env_params.target.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
+            self._static_obstacle_pos = torch.tensor([0.0, 0.0, self.cfg.env_params.obstacle.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
+            self.cfg.env_params.obstacle.r = float(0.5 * math.sqrt(self.cfg.env_params.obstacle.size[0] ** 2 + self.cfg.env_params.obstacle.size[1] ** 2))
+            self.cfg.env_params.target.r = float(0.5 * math.sqrt(self.cfg.env_params.target.size[0] ** 2 + self.cfg.env_params.target.size[1] ** 2))
+            self.cfg.env_params.robot_r = 0.2  # 20cm 半径
 
-        # 给target obstacle微小扰动（2cm 量级）
-        target_pos = self._static_target_pos[env_ids] + torch.randn(len(env_ids), 3, device=self.device) * 0.02
-        obstacle_pos = self._static_obstacle_pos[env_ids] + torch.randn(len(env_ids), 3, device=self.device) * 0.02
+        # 1) 给target obstacle (x,y) 微小扰动（5cm 量级）
 
-        target_center = target_pos[0, :2]
-        obstacle_center = obstacle_pos[0, :2]
+        target_pos = self._static_target_pos[env_ids].clone()
+        target_pos[:, :2] += torch.randn(len(env_ids), 2, device=self.device) * self.cfg.env_params.reset.target_noise
 
-        robot_xy = self.sample_safe_rect_positions(
+        obstacle_pos = self._static_obstacle_pos[env_ids].clone()
+        obstacle_pos[:, :2] += torch.randn(len(env_ids), 2, device=self.device) * self.cfg.env_params.reset.obstacle_noise
+
+        target_xy = target_pos[:, :2]
+        obstacle_xy = obstacle_pos[:, :2]
+
+        # 2) 从配置读房间长宽 / 半径等
+        room_size = torch.tensor([3.0, 3.0], device=self.device)    #TODO change to cfg
+
+        # 3) 九宫格格子索引（可配置）
+        # 格子编号规则（ix,iy）：
+        # ↑ y
+        # |
+        # |
+        # 6 | 7 | 8    ← top row (iy = 2)
+        # ---+---+---
+        # 3 | 4 | 5    ← middle row (iy = 1)
+        # ---+---+---
+        # 0 | 1 | 2    ← bottom row (iy = 0)
+        # |
+        # +--------→ x
+
+        tgt_cell = int(5)
+        obs_cell = int(4)
+
+        # 4) 批量采样机器人 XY（不需要 env_ids 内容本身，只需要 num_envs）
+        robot_xy = sample_safe_rect_positions_grid_torch(
             num_envs=len(env_ids),
-            target_center=target_center,
-            target_size=self.target_size[:2],
-            obstacle_center=obstacle_center,
-            obstacle_size=self.obstacle_size[:2],
-            arena_half=1.4,
-            margin=0.1
+            target_cell_idx=tgt_cell,
+            obstacle_cell_idx=obs_cell,
+            room_size=room_size,
+            robot_radius= self.cfg.env_params.robot_r,
+            target_radius=self.cfg.env_params.obstacle.r,
+            obstacle_radius=self.cfg.env_params.target.r,
+            target_xy=target_xy,
+            obstacle_xy=obstacle_xy,
+            margin=0.05,
+            max_tries=10,
         )
 
+        # 5) 组装 root_states 写回（用 env_ids 进行索引）
         robot_pos = torch.cat([robot_xy, torch.zeros(len(env_ids), 1, device=self.device)], dim=-1)
-    
 
-        # 写入机器人和对应的 robot_b
-        # --------------------
         root_states_a = self.robot_a.data.default_root_state[env_ids].clone()
         root_states_b = self.robot_b.data.default_root_state[env_ids].clone()
-
 
         root_states_a[:, :3] = self.scene.env_origins[env_ids] + robot_pos
         root_states_b[:, :3] = root_states_a[:, :3].clone()
@@ -660,7 +581,6 @@ class JetautoNavigationEnv(DirectRLEnv):
         yaw = (torch.rand(len(env_ids), device=self.device) - 0.5) * 2 * math.pi
         quat = math_utils.quat_from_angle_axis(yaw, torch.tensor([0.0, 0.0, 1.0], device=self.device))
 
-
         root_states_a[:, 3:7] = quat
         root_states_b[:, 3:7] = quat
 
@@ -668,19 +588,6 @@ class JetautoNavigationEnv(DirectRLEnv):
         self.robot_a.write_root_velocity_to_sim(root_states_a[:, 7:], env_ids)
         self.robot_b.write_root_pose_to_sim(root_states_b[:, :7], env_ids)
         self.robot_b.write_root_velocity_to_sim(root_states_b[:, 7:], env_ids)
-
-
-        # # 重置机器人位置和朝向（放置到环境中心，速度清零）
-        # root_states = self.robot_a.data.default_root_state[env_ids].clone()
-        # root_states[:, :3] += self.scene.env_origins[env_ids]  # 设置位置为环境原点
-        # self.robot_a.write_root_pose_to_sim(root_states[:, :7], env_ids=env_ids)
-        # self.robot_a.write_root_velocity_to_sim(root_states[:, 7:], env_ids=env_ids)
-
-        # root_states_b = self.robot_b.data.default_root_state[env_ids].clone()
-        # root_states_b[:, :3] += self.scene.env_origins[env_ids]  # 设置位置为环境原点
-        # root_states_b[:, 0] += 3.0
-        # self.robot_b.write_root_pose_to_sim(root_states_b[:, :7], env_ids=env_ids)
-        # self.robot_b.write_root_velocity_to_sim(root_states_b[:, 7:], env_ids=env_ids)
 
         # 重置机器人的关节（轮子）位置和速度
         joint_pos_a = self.robot_a.data.default_joint_pos[env_ids].clone()
@@ -692,9 +599,6 @@ class JetautoNavigationEnv(DirectRLEnv):
         joint_vel_b = torch.zeros_like(joint_pos_b)
         self.robot_b.set_joint_position_target(joint_pos_b, env_ids=env_ids)
         self.robot_b.write_joint_state_to_sim(joint_pos_b, joint_vel_b, env_ids=env_ids)
-
-
-
 
         # --------------------
         # 写入 target / obstacle
@@ -712,7 +616,7 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         # B房间同步
         target_state_b = target_state.clone()
-        target_state_b[:, 0] += 3.0
+        target_state_b[:, 0] += self.cfg.env_params.reset.room_b_offset_x
         self._target_b.write_root_pose_to_sim(target_state_b[:, :7], env_ids)
         self._target_b.write_root_velocity_to_sim(target_state_b[:, 7:], env_ids)
 
@@ -724,69 +628,121 @@ class JetautoNavigationEnv(DirectRLEnv):
         self.prev_vis[env_ids] = 0.0
 
 
-    def rect_bounds(self, center, size):
-        # 自动处理 tuple / list / numpy 类型
-        if not torch.is_tensor(center):
-            center = torch.tensor(center, dtype=torch.float32, device=self.device)
-        if not torch.is_tensor(size):
-            size = torch.tensor(size, dtype=torch.float32, device=self.device)
-        half = size / 2
-        return center[0] - half[0], center[0] + half[0], center[1] - half[1], center[1] + half[1]
 
 
-    def sample_safe_rect_positions(
-        self,
-        num_envs: int,
-        target_center: torch.Tensor, target_size: torch.Tensor,
-        obstacle_center: torch.Tensor, obstacle_size: torch.Tensor,
-        arena_half: float = 1.4, margin: float = 0.1
-    ):
-        device = self.device
 
-        # 房间范围
-        x_min, x_max = -arena_half, arena_half
-        y_min, y_max = -arena_half, arena_half
 
-        # 得到目标/障碍的边界
-        tx1, tx2, ty1, ty2 = self.rect_bounds(target_center, target_size)
-        bx1, bx2, by1, by2 = self.rect_bounds(obstacle_center, obstacle_size)
+@torch.jit.script
+def sample_safe_rect_positions_grid_torch(
+    num_envs: int,                               # 本次要重置的环境个数 (len(env_ids))
+    target_cell_idx: int,                 # 0..8
+    obstacle_cell_idx: int,               # 0..8
+    room_size: torch.Tensor,             # [2] -> (L, W)
+    robot_radius: float,
+    target_radius: float,
+    obstacle_radius: float,
+    target_xy: torch.Tensor,              # [M, 2] 每个 env 的目标中心 (x,y)
+    obstacle_xy: torch.Tensor,            # [M, 2] 每个 env 的障碍中心 (x,y)
+    margin: float = 0.05,
+    max_tries: int = 10,
+) -> torch.Tensor:
+    
+    """
+    3x3 九宫格采样（长方形房间；只对贴墙侧内缩；基于半径的碰撞判定）。
+    - 仅当格子的某一侧恰好是房间外墙时，才在该侧内缩 (robot_radius + margin)。
+    - 中央格不缩，边格缩一侧，角格缩两侧。
+    - 如果整体房间在任何轴向上都放不下机器人：抛 ValueError。
+    - 与目标/障碍的碰撞：dist > (r_robot + r_obj + margin)。
+    """
 
-        # 加 margin（安全距离）
-        tx1 -= margin; tx2 += margin; ty1 -= margin; ty2 += margin
-        bx1 -= margin; bx2 += margin; by1 -= margin; by2 += margin
+    # 基本量
+    L, W = room_size[0], room_size[1]
+    half_L = L * 0.5
+    half_W = W * 0.5
+    pad = robot_radius + margin
 
-        # 合并禁区 (union)
-        x_forbidden_min = min(tx1, bx1)
-        x_forbidden_max = max(tx2, bx2)
-        y_forbidden_min = min(ty1, by1)
-        y_forbidden_max = max(ty2, by2)
+    # 房间过小：抛异常（TorchScript 允许 RuntimeError）
+    if (L <= 2.0 * pad) or (W <= 2.0 * pad):
+        raise RuntimeError("Room too small for robot size + margin.")
 
-        # ---- X 方向可采样区间 ----
-        left_len = max(0.0, x_forbidden_min - x_min)
-        right_len = max(0.0, x_max - x_forbidden_max)
-        total_len_x = left_len + right_len
+    # 3x3 网格边界（形状 [4]）
+    x_edges = torch.linspace(-half_L, half_L, 4, device=room_size.device, dtype=room_size.dtype)
+    y_edges = torch.linspace(-half_W, half_W, 4, device=room_size.device, dtype=room_size.dtype)
 
-        # 采样决策：落在左边还是右边
-        choice_x = torch.rand(num_envs, device=device)
-        in_left_x = choice_x < (left_len / (total_len_x + 1e-6))
-        x = torch.empty(num_envs, device=device)
+    # 原始 cell 边界：cell_bounds[9,4] = [x1,x2,y1,y2]
+    cell_bounds = torch.empty((9, 4), device=room_size.device, dtype=room_size.dtype)
+    # 行优先: 0 1 2 / 3 4 5 / 6 7 8
+    # ix = 0,1,2 (列) ; iy = 0,1,2 (行, 0=下,2=上)
+    idx = 0
+    for iy in range(3):
+        for ix in range(3):
+            cell_bounds[idx, 0] = x_edges[ix]
+            cell_bounds[idx, 1] = x_edges[ix + 1]
+            cell_bounds[idx, 2] = y_edges[iy]
+            cell_bounds[idx, 3] = y_edges[iy + 1]
+            idx += 1
 
-        if left_len > 0:
-            x[in_left_x] = torch.rand(in_left_x.sum(), device=device) * left_len + x_min
-        if right_len > 0:
-            x[~in_left_x] = torch.rand((~in_left_x).sum(), device=device) * right_len + x_forbidden_max
+    # 只对贴墙侧内缩 pad
+    ix = torch.arange(9, device=room_size.device) % 3
+    iy = torch.arange(9, device=room_size.device) // 3
 
-        # ---- Y 方向同理 ----
-        bottom_len = max(0.0, y_forbidden_min - y_min)
-        top_len = max(0.0, y_max - y_forbidden_max)
-        total_len_y = bottom_len + top_len
+    # shrink 左/右/下/上侧
+    # 左墙: ix==0 → x1+=pad
+    cell_bounds[:, 0] = cell_bounds[:, 0] + torch.where(ix == 0, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
+    # 右墙: ix==2 → x2-=pad
+    cell_bounds[:, 1] = cell_bounds[:, 1] - torch.where(ix == 2, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
+    # 下墙: iy==0 → y1+=pad
+    cell_bounds[:, 2] = cell_bounds[:, 2] + torch.where(iy == 0, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
+    # 上墙: iy==2 → y2-=pad
+    cell_bounds[:, 3] = cell_bounds[:, 3] - torch.where(iy == 2, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
 
-        choice_y = torch.rand(num_envs, device=device)
-        in_bottom_y = choice_y < (bottom_len / (total_len_y + 1e-6))
-        y = torch.empty(num_envs, device=device)
-        if bottom_len > 0:
-            y[in_bottom_y] = torch.rand(in_bottom_y.sum(), device=device) * bottom_len + y_min
-        if top_len > 0:
-            y[~in_bottom_y] = torch.rand((~in_bottom_y).sum(), device=device) * top_len + y_forbidden_max
+    # 禁用目标/障碍所在的两个格子
+    keep_mask = torch.ones(9, dtype=torch.bool, device=room_size.device)
+    keep_mask[target_cell_idx] = False
+    keep_mask[obstacle_cell_idx] = False
 
-        return torch.stack([x, y], dim=-1)
+    usable_cells = cell_bounds[keep_mask]        # [7,4]
+    if usable_cells.shape[0] == 0:
+        raise RuntimeError("No usable grid cells after wall-side shrinking.")
+
+    # 碰撞安全距离
+    safe_dist_t = robot_radius + target_radius + margin
+    safe_dist_o = robot_radius + obstacle_radius + margin
+
+    # 输出与状态
+    robot_xy = torch.zeros((num_envs, 2), device=room_size.device, dtype=room_size.dtype)
+    placed = torch.zeros(num_envs, dtype=torch.bool, device=room_size.device)
+
+    # 反复尝试（最多 max_tries 次）
+    for _ in range(max_tries):
+        # 为每个 env 随机选择一个可用格子
+        idx7 = torch.randint(low=0, high=usable_cells.shape[0], size=(num_envs,), device=room_size.device)
+        sel = usable_cells.index_select(0, idx7)  # [M,4]
+        x1, x2, y1, y2 = sel[:, 0], sel[:, 1], sel[:, 2], sel[:, 3]
+
+        # 在该格子的有效矩形内均匀采样
+        rx = torch.rand(num_envs, device=room_size.device, dtype=room_size.dtype) * (x2 - x1) + x1
+        ry = torch.rand(num_envs, device=room_size.device, dtype=room_size.dtype) * (y2 - y1) + y1
+        pos = torch.stack((rx, ry), dim=-1)  # [M,2]
+
+        # 基于半径的碰撞检测（每 env 与各自 target/obstacle）
+        dist_t = torch.linalg.norm(pos - target_xy, dim=-1)
+        dist_o = torch.linalg.norm(pos - obstacle_xy, dim=-1)
+        ok = (dist_t > safe_dist_t) & (dist_o > safe_dist_o) & (~placed)
+
+        robot_xy = torch.where(ok.unsqueeze(-1), pos, robot_xy)
+        placed = placed | ok
+
+        if bool(placed.all()):
+            break
+
+    # 兜底：未放置成功者 → 把其选中格子的中心作为位置
+    if not bool(placed.all()):
+        idx7 = torch.randint(low=0, high=usable_cells.shape[0], size=(num_envs,), device=room_size.device)
+        sel = usable_cells.index_select(0, idx7)
+        cx = (sel[:, 0] + sel[:, 1]) * 0.5
+        cy = (sel[:, 2] + sel[:, 3]) * 0.5
+        center_pos = torch.stack((cx, cy), dim=-1)
+        robot_xy = torch.where((~placed).unsqueeze(-1), center_pos, robot_xy)
+
+    return robot_xy
