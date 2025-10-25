@@ -77,7 +77,6 @@ class JetautoNavigationEnv(DirectRLEnv):
         print("Torch mem:", torch.cuda.memory_allocated()/1024**2, "MB")
 
 
-
     def _setup_scene(self):
         """构建场景：房间A(机器人+目标+障碍物+围墙) + 房间B(机器人+目标+围墙)。"""
 
@@ -97,17 +96,17 @@ class JetautoNavigationEnv(DirectRLEnv):
         # wall_z = wall_size[2] / 2
         wall_z = w.size[2] / 2
         walls_a = [
-            {"name": "RoomA_Wall_N", "pos": (0.0, 1.5, wall_z), "size": w.size},
-            {"name": "RoomA_Wall_S", "pos": (0.0, -1.5, wall_z), "size": w.size},
-            {"name": "RoomA_Wall_E", "pos": (1.5, 0.0, wall_z), "size": w.size_vert},
-            {"name": "RoomA_Wall_W", "pos": (-1.5, 0.0, wall_z), "size": w.size_vert},
+            {"name": "RoomA_Wall_N", "pos": (0.0, 1.5, wall_z), "size": w.size,       "color": (0.1, 0.4, 0.9)},   # 蓝
+            {"name": "RoomA_Wall_S", "pos": (0.0, -1.5, wall_z), "size": w.size,      "color": (0.95, 0.9, 0.5)},  # 浅黄
+            {"name": "RoomA_Wall_E", "pos": (1.5, 0.0, wall_z), "size": w.size_vert,  "color": (0.8, 0.4, 0.05)},  # 深橙
+            {"name": "RoomA_Wall_W", "pos": (-1.5, 0.0, wall_z), "size": w.size_vert, "color": (0.55, 0.1, 0.8)},  # 紫
         ]
         for wall in walls_a:
             cfg = RigidObjectCfg(
                 prim_path=f"/World/envs/env_.*/{wall['name']}",
                 spawn=sim_utils.CuboidCfg(
                     size=wall["size"],
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.8, 0.8)),
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=wall["color"]),
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
                     collision_props=sim_utils.CollisionPropertiesCfg()
                 ),
@@ -129,7 +128,7 @@ class JetautoNavigationEnv(DirectRLEnv):
             spawn=sim_utils.CuboidCfg(
                 size=t.size,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=False, disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 semantic_tags=[("class", "target")]
             ),
@@ -149,7 +148,7 @@ class JetautoNavigationEnv(DirectRLEnv):
             spawn=sim_utils.CuboidCfg(
                 size=o.size,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=False, disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 semantic_tags=[("class", "obstacle")]
             ),
@@ -216,7 +215,7 @@ class JetautoNavigationEnv(DirectRLEnv):
             spawn=sim_utils.CuboidCfg(
                 size=t.size,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=False, disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 semantic_tags=[("class", "target")]
                 # semantic_tags=SemanticTagsCfg(class_name="target")
@@ -403,6 +402,10 @@ class JetautoNavigationEnv(DirectRLEnv):
         dist_to_obs = torch.norm(robot_xy.unsqueeze(1) - obs_xy, dim=-1)  # [num_envs, num_obs]
         obs_collision = (dist_to_obs < (self.cfg.env_params.obstacle.r + self.cfg.env_params.robot_r)).any(dim=1)
 
+        target_xy = self._target_a.data.root_pos_w[:, :2]
+        dist_to_target = torch.norm(robot_xy - target_xy, dim=-1)
+        target_collision = dist_to_target < (self.cfg.env_params.target.r + self.cfg.env_params.robot_r)
+
         # if wall_collision.sum().item() > 0:
         #     print("Wall collision detected!")
         # if obs_collision.sum().item() > 0:
@@ -410,7 +413,7 @@ class JetautoNavigationEnv(DirectRLEnv):
         
         # print("Wall collisions:", wall_collision.sum().item(), "Obstacle collisions:", obs_collision.sum().item())
 
-        self.collision_mask = wall_collision | obs_collision
+        self.collision_mask = wall_collision | obs_collision | target_collision
 
         # return {"policy": resnet_features, "critic": resnet_features, "rgb":rgb_a}
         return {
@@ -516,7 +519,7 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         if not hasattr(self, "_static_target_pos"):
             # 只在第一次初始化时设置
-            self._static_target_pos = torch.tensor([1.0, 1.0, self.cfg.env_params.target.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
+            self._static_target_pos = torch.tensor([1.0, 0.0, self.cfg.env_params.target.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
             self._static_obstacle_pos = torch.tensor([0.0, 0.0, self.cfg.env_params.obstacle.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
             self.cfg.env_params.obstacle.r = float(0.5 * math.sqrt(self.cfg.env_params.obstacle.size[0] ** 2 + self.cfg.env_params.obstacle.size[1] ** 2))
             self.cfg.env_params.target.r = float(0.5 * math.sqrt(self.cfg.env_params.target.size[0] ** 2 + self.cfg.env_params.target.size[1] ** 2))

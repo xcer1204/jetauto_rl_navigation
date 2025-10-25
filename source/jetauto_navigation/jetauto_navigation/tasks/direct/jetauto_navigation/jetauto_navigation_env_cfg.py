@@ -31,7 +31,7 @@ class WallsCfg:
 @configclass
 class TargetCfg:
     """目标方块参数"""
-    size = (0.15, 0.15, 0.15)
+    size = (0.1, 0.1, 0.1)
     color = (1.0, 0.0, 0.0)
     init_pos = (0.0, 0.0, 0.0)
     # 重置时，目标放在机器人前方的基准距离（米）
@@ -44,7 +44,7 @@ class TargetCfg:
 @configclass
 class ObstacleCfg:
     """障碍物参数"""
-    size = (0.1, 0.1, 0.1)
+    size = (0.15, 0.15, 0.15)
     color = (0.0, 1.0, 0.0)
     # 将障碍物放在 机器人->目标 连线上的比例区间 [alpha_min, alpha_max]
     alpha_min = 0.3
@@ -120,6 +120,3 @@ class JetautoNavigationEnvCfg(DirectRLEnvCfg):
     env_params: EnvParamsCfg = EnvParamsCfg()
 
     # ====== 新增：环境参数 ======
-
-
-
