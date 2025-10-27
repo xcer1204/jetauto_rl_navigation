@@ -76,41 +76,45 @@ def set_fixed_init(env, pos=(0.0, 0.0, 0.05), yaw_deg=0.0):
     return  # 如需固定初始位姿，这里接你的自定义 API
 
 def load_ppo_agent(env, checkpoint_path, device):
-    from skrl.agents.torch.ppo import PPO
-    from skrl.models.torch import GaussianMixin, DeterministicMixin, Model
-    import torch.nn as nn
-    obs_dim = int(np.prod(env.observation_space.shape))
-    act_dim = int(np.prod(env.action_space.shape))
+    """
+    用任务注册的 skrl 配置构建与训练一致的 agent，并加载 checkpoint。
+    关键：用 SkrlVecEnvWrapper 包装 env，再交给 Runner。
+    """
+    import importlib
+    import importlib.resources as pkg_resources
+    from omegaconf import OmegaConf
+    from skrl.utils.runner.torch import Runner
+    from isaaclab_rl.skrl import SkrlVecEnvWrapper
+    import gymnasium as gym
 
-    class Policy(GaussianMixin, Model):
-        def __init__(self):
-            Model.__init__(self, obs_space=env.observation_space, act_space=env.action_space, device=device)
-            GaussianMixin.__init__(self, clip_actions=False, clip_log_std=True,
-                                   min_log_std=-20, max_log_std=2, initial_log_std=0.0)
-            self.net = nn.Sequential(
-                nn.Linear(obs_dim, 32), nn.ELU(),
-                nn.Linear(32, 32), nn.ELU(),
-                nn.Linear(32, act_dim)
-            )
-        def compute(self, inputs, role):
-            x = inputs["states"]; mu = self.net(x); return mu, {}
+    # 1) 取出任务里注册的 skrl cfg 入口
+    task_id = env.unwrapped.spec.id if hasattr(env, "unwrapped") else env.spec.id
+    spec = gym.envs.registry[task_id]
+    skrl_ep = spec.kwargs.get("skrl_cfg_entry_point") or spec.kwargs.get("skrl_ppo_cfg_entry_point")
+    if not skrl_ep or ":" not in skrl_ep:
+        raise RuntimeError(f"Task '{task_id}' 没有提供 skrl_cfg_entry_point。")
+    mod_path, yaml_name = skrl_ep.split(":")
 
-    class Value(DeterministicMixin, Model):
-        def __init__(self):
-            Model.__init__(self, obs_space=env.observation_space, act_space=env.action_space, device=device)
-            DeterministicMixin.__init__(self, clip_actions=False)
-            self.net = nn.Sequential(
-                nn.Linear(obs_dim, 32), nn.ELU(),
-                nn.Linear(32, 32), nn.ELU(),
-                nn.Linear(32, 1)
-            )
-        def compute(self, inputs, role):
-            x = inputs["states"]; v = self.net(x); return v, {}
+    # 2) 读取 YAML -> experiment_cfg
+    cfg_text = pkg_resources.files(mod_path).joinpath(yaml_name).read_text(encoding="utf-8")
+    experiment_cfg = OmegaConf.to_container(OmegaConf.create(cfg_text), resolve=True)
 
-    agent = PPO(models={"policy": Policy(), "value": Value()}, memory=None,
-                cfg={"rollouts": 1, "learning_starts": 0})
-    agent.init(); agent.load(checkpoint_path); agent.set_running_mode("eval")
-    return agent
+    # 3) 关闭日志/ckpt生成；设置 device（有些版本用得到）
+    experiment_cfg["trainer"]["close_environment_at_exit"] = False
+    experiment_cfg["agent"]["experiment"]["write_interval"] = 0
+    experiment_cfg["agent"]["experiment"]["checkpoint_interval"] = 0
+    if device:
+        experiment_cfg["agent"]["device"] = str(device)
+
+    # 4) 包装环境 → Runner（关键修复）
+    env_wrapped = SkrlVecEnvWrapper(env, ml_framework="torch")
+    runner = Runner(env_wrapped, experiment_cfg)
+
+    agent = runner.agent
+    agent.set_running_mode("eval")
+    agent.load(checkpoint_path)
+    return agent, env_wrapped
+
 
 def run_fixed_rollouts(args):
     if not args.record_dir: return
@@ -156,18 +160,22 @@ def evaluate(args):
                                 "collision_rate","terminated_rate","truncated_rate"])
     for seed in args.seeds:
         set_global_seed(seed)
-        env = make_env(args.task, headless=args.headless)
+        env = make_env(args.task, headless=args.headless, overrides={"seed": seed})
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        agent = load_ppo_agent(env, args.checkpoint, device)
+        agent, env = load_ppo_agent(env, args.checkpoint, device)
 
         succ_cnt = 0; total_ret = 0.0; n = args.episodes
         fail_collision = fail_term = fail_trunc = 0
         for _ in range(n):
-            obs, info = env.reset(seed=seed); ep_ret = 0.0
+            obs, info = env.reset(); ep_ret = 0.0
             while True:
-                with torch.no_grad():
-                    act, _ = agent.act({"states": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)})
-                obs, rew, terminated, truncated, info = env.step(act.squeeze(0).cpu().numpy())
+                # with torch.no_grad():
+                #     act, _ = agent.act({"states": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)})
+                # obs, rew, terminated, truncated, info = env.step(act.squeeze(0).cpu().numpy())
+                with torch.inference_mode():
+                    outputs = agent.act(obs, timestep=0, timesteps=0)
+                    actions = outputs[-1].get("mean_actions", outputs[0])
+                    obs, rew, terminated, truncated, info = env.step(actions)
                 ep_ret += float(rew)
                 if terminated or truncated:
                     success = infer_success_from_info(info)
