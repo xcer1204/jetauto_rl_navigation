@@ -472,6 +472,9 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         # 记录上一帧可见度
         self.prev_vis = self.curr_vis.clone()
+        # 让 info 能拿到当前可见率（用于成功判定兜底）
+        self.extras["curr_vis"] = float(self.curr_vis.mean().item())
+
 
         return reward
 
@@ -501,6 +504,9 @@ class JetautoNavigationEnv(DirectRLEnv):
         
 
         # print("Terminated:", terminated.sum().item(), "Success:", success.sum().item(), "Failed:", failed.sum().item(), "Truncated:", truncated.sum().item())
+        # 导出成功 / 碰撞标志，供评测脚本读取
+        self.extras["success"] = bool((curr_vis >= 0.99).any().item())
+        self.extras["collision"] = bool(self.collision_mask.any().item())
 
 
         return terminated, truncated
