@@ -169,7 +169,6 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         # 相机 A
         cam_cfg_a = CameraCfg(
-            # prim_path="/World/envs/env_.*/Robot_A/base_link/visuals/Kaya_Body_Collapsed/kaya_camera",
             prim_path="/World/envs/env_.*/Robot_A/base_footprint/visuals/depth_camera_link/Camera",
             update_period=0.0167,
             height=c.height, width=c.width,
@@ -238,7 +237,6 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         # 相机 B
         cam_cfg_b = CameraCfg(
-            # prim_path="/World/envs/env_.*/Robot_B/base_link/visuals/Kaya_Body_Collapsed/kaya_camera",
             prim_path="/World/envs/env_.*/Robot_B/base_footprint/visuals/depth_camera_link/Camera",
             update_period=0.0167,
             height=c.height, width=c.width,
@@ -598,7 +596,7 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         robot_xy = sample_in_rect(
             num_envs=len(env_ids),
-            x1=0.3, x2=0.8,
+            x1=0.6, x2=1.0,
             y1=1.1, y2=2.0,
             device="cuda"
         )

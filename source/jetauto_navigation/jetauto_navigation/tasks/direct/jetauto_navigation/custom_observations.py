@@ -244,32 +244,22 @@ class GSImageFeatures:
         # 1) 构造相机位姿 + 目标位置
         # ---------------------------
         # 直接用 camera_a 的世界位姿（已经绑在机器人上了）
-        # 固定相机位置（世界坐标） for testing
-        #TODO 可以改成动态的相机位置
-        cam_pos_local = torch.tensor(
-            [[0.0, 0.0, 1.0]] * env.num_envs,
-            dtype=torch.float32,
-            device=env.device,
-        )
+        cam_pos = env._camera_a.data.pos_w.clone()            # (num_envs, 3)
+        cam_quat = env._camera_a.data.quat_w_world.clone()    # (num_envs, 4)
 
-        # 固定相机朝向（四元数）
-        cam_quat_w = torch.tensor(
-            [[0.0, 0.0, 0.0, 1.0]] * env.num_envs,
-            dtype=torch.float32,
-            device=env.device,
-        )
         # 这里先不做坐标系转换，直接当成 render_server 的 “pos, ori”
         # 如果你 3DGS 坐标约定是 ROS，相机坐标不同，再去加转换
         # 目标物体：你现在只有一个 Target_A，就全部当成 red_cone 传进去
-        target_pos = env._target_a.data.root_pos_w - env.scene.env_origins   # (N,3)
-        red_cone = target_pos
-        green_cone = target_pos
-        blue_cone = target_pos
+        # target_pos = env._target_a.data.root_pos_w - env.scene.env_origins   # (N,3)
+
+        #TODO 如果你有多个目标/障碍物，可以分别传给 red/green/blue_cone
+        # red_cone = target_pos
+        # green_cone = target_pos
+        # blue_cone = target_pos
 
         # 发送到 render_server（不关心返回值，图像走 socket）
         # 注意：rpyc 这边可以直接传 torch.Tensor，原 VR-Robo 就是这么干的
-        self.conn.root.exposed_render(cam_pos_local, cam_quat_w, red_cone, green_cone, blue_cone)
-
+        self.conn.root.exposed_render(cam_pos, cam_quat)
         # ---------------------------
         # 2) 从 GSServer 拿图像
         # ---------------------------
