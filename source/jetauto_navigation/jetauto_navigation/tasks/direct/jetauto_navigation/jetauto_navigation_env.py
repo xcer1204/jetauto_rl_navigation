@@ -26,12 +26,12 @@ from isaaclab.assets import RigidObject, RigidObjectCfg
 from isaaclab.sensors import Camera, CameraCfg, TiledCameraCfg
 from isaaclab.managers import SceneEntityCfg
 
-from .custom_observations import ImageFeaturesNoHead
+from .custom_observations import ImageFeaturesNoHead,GSImageFeatures
 from isaaclab.envs.mdp import * 
 from isaaclab.managers.manager_term_cfg import ObservationTermCfg
 
 from .jetauto_navigation_env_cfg import JetautoNavigationEnvCfg
-
+import rpyc
 
 class JetautoNavigationEnv(DirectRLEnv):
     cfg: JetautoNavigationEnvCfg
@@ -57,16 +57,23 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         self.collision_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        obs_term_cfg = ObservationTermCfg(
-            func=ImageFeaturesNoHead,
-            params={
-                "sensor_cfg": SceneEntityCfg("camera_a"),
-                "data_type": "rgb",
-                "model_name": "resnet18",
-            },
-        )
+        # obs_term_cfg = ObservationTermCfg(
+        #     func=ImageFeaturesNoHead,
+        #     params={
+        #         "sensor_cfg": SceneEntityCfg("camera_a"),
+        #         "data_type": "rgb",
+        #         "model_name": "resnet18",
+        #     },
+        # )
 
-        self.resnet_extractor = ImageFeaturesNoHead(obs_term_cfg, env=self)
+        # self.resnet_extractor = ImageFeaturesNoHead(obs_term_cfg, env=self)
+        self.gs_feature = GSImageFeatures(
+            model_name="resnet18",
+            device=self.device,
+            num_envs=self.num_envs,
+            H=180,
+            W=320,
+        )
         # feat = ImageFeaturesNoHead(obs_term_cfg, env=self)
         # print(feat._model)
         # 手动初始化 ResNet18 特征提取模块
@@ -74,6 +81,8 @@ class JetautoNavigationEnv(DirectRLEnv):
         self._const_success = torch.tensor(20.0, device=self.device)
         self._const_zero = torch.tensor(0.0, device=self.device)
         self._const_penalty = torch.tensor(-1.0, device=self.device)
+        self.gs_conn = rpyc.connect("localhost", 18861)
+
         print("Torch mem:", torch.cuda.memory_allocated()/1024**2, "MB")
 
 
@@ -91,15 +100,14 @@ class JetautoNavigationEnv(DirectRLEnv):
         c = self.cfg.env_params.camera
         offset_x = self.cfg.env_params.reset.room_b_offset_x
         # 房间 A 围墙
-        # wall_size = (3.0, 0.1, 0.4)
-        # wall_size_vert = (0.1, 3.0, 0.4)
-        # wall_z = wall_size[2] / 2
+        # wall_size = (2.5, 0.1, 1.0)
+        # wall_size_vert = (0.1, 2.65, 1.0)
         wall_z = w.size[2] / 2
         walls_a = [
-            {"name": "RoomA_Wall_N", "pos": (0.0, 1.5, wall_z), "size": w.size,       "color": (0.1, 0.4, 0.9)},   # 蓝
-            {"name": "RoomA_Wall_S", "pos": (0.0, -1.5, wall_z), "size": w.size,      "color": (0.95, 0.9, 0.5)},  # 浅黄
-            {"name": "RoomA_Wall_E", "pos": (1.5, 0.0, wall_z), "size": w.size_vert,  "color": (0.8, 0.4, 0.05)},  # 深橙
-            {"name": "RoomA_Wall_W", "pos": (-1.5, 0.0, wall_z), "size": w.size_vert, "color": (0.55, 0.1, 0.8)},  # 紫
+            {"name": "RoomA_Wall_N", "pos": (w.size[0]/2, w.size_vert[1], wall_z), "size": w.size,       "color": (0.1, 0.4, 0.9)},   # 蓝
+            {"name": "RoomA_Wall_S", "pos": (w.size[0]/2, 0, wall_z), "size": w.size,      "color": (0.95, 0.9, 0.5)},  # 浅黄
+            {"name": "RoomA_Wall_E", "pos": (w.size[0], w.size_vert[1]/2, wall_z), "size": w.size_vert,  "color": (0.8, 0.4, 0.05)},  # 深橙
+            {"name": "RoomA_Wall_W", "pos": (0.0, w.size_vert[1]/2, wall_z), "size": w.size_vert, "color": (0.55, 0.1, 0.8)},  # 紫
         ]
         for wall in walls_a:
             cfg = RigidObjectCfg(
@@ -189,10 +197,10 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         # 房间 B 围墙
         walls_b = [
-            {"name": "RoomB_Wall_N", "pos": (offset_x, 1.5, wall_z), "size": w.size},
-            {"name": "RoomB_Wall_S", "pos": (offset_x, -1.5, wall_z), "size": w.size},
-            {"name": "RoomB_Wall_E", "pos": (offset_x + 1.5, 0.0, wall_z), "size": w.size_vert},
-            {"name": "RoomB_Wall_W", "pos": (offset_x - 1.5, 0.0, wall_z), "size": w.size_vert},
+            {"name": "RoomB_Wall_N", "pos": (w.size[0]/2+offset_x, w.size_vert[1], wall_z), "size": w.size},
+            {"name": "RoomB_Wall_S", "pos": (w.size[0]/2+offset_x, 0, wall_z), "size": w.size},
+            {"name": "RoomB_Wall_E", "pos": (w.size[0]+offset_x, w.size_vert[1]/2, wall_z), "size": w.size_vert},
+            {"name": "RoomB_Wall_W", "pos": (0.0+offset_x, w.size_vert[1]/2, wall_z), "size": w.size_vert},
         ]
         for wall in walls_b:
             cfg = RigidObjectCfg(
@@ -319,8 +327,8 @@ class JetautoNavigationEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
 
-        # rgb_a = self._camera_a.data.output["rgb"]   #([num_envs, 320, 320, 3])
-        # rgb_b = self._camera_b.data.output["rgb"]
+        with torch.no_grad():
+            resnet_features = self.gs_feature(self)   # (num_envs, 512)
 
         # 语义分割输出（取单通道 ID 图）
         seg_a = self._camera_a.data.output["semantic_segmentation"][..., 0]  # [N,H,W]
@@ -371,13 +379,13 @@ class JetautoNavigationEnv(DirectRLEnv):
         self.curr_vis = visible_ratio
 
         # ---- ResNet 特征 ----
-        with torch.no_grad():
-            resnet_features = self.resnet_extractor(
-                env=self,
-                sensor_cfg=SceneEntityCfg("camera_a"),
-                data_type="rgb",
-                model_name="resnet18",
-            )
+        # with torch.no_grad():
+        #     resnet_features = self.resnet_extractor(
+        #         env=self,
+        #         sensor_cfg=SceneEntityCfg("camera_a"),
+        #         data_type="rgb",
+        #         model_name="resnet18",
+        #     )
 
         # 历史缓存（右移一格，把新帧放最后一格）
         self._feat_hist = torch.roll(self._feat_hist, shifts=-1, dims=1)
@@ -394,8 +402,14 @@ class JetautoNavigationEnv(DirectRLEnv):
 
         room_half = 1.5  #TODO change to cfg
         wall_margin = self.cfg.env_params.walls.wall_margin
-        wall_collision = (torch.abs(robot_local) > (room_half - wall_margin)).any(dim=-1)
 
+        # wall_collision = (torch.abs(robot_local) > (room_half - wall_margin)).any(dim=-1)
+
+        robot_x = robot_xy[:, 0]
+        robot_y = robot_xy[:, 1]
+
+        inside = (robot_x >= 0.3) & (robot_x <= 2.2) & (robot_y >= 0.3) & (robot_y <= 2.35)
+        wall_collision = ~inside
 
         # 所有障碍物在 self._obstacles 列表中
         obs_xy = torch.stack([obs.data.root_pos_w[:, :2] for obs in self._obstacles], dim=1)  # [num_envs, num_obs, 2]
@@ -520,13 +534,13 @@ class JetautoNavigationEnv(DirectRLEnv):
             env_ids = torch.arange(self.num_envs, device=self.device)
         
 
-        # jetauto目测长34厘米 宽22厘米
-        # 机器人中心到四个角 = (0.17^2 + 0.11^2) ^ 0.5  # 约20cm
+        # jetauto目测长30厘米 宽26厘米
+        # 机器人中心到四个角 = (0.15^2 + 0.13^2) ^ 0.5  # 约20cm
 
         if not hasattr(self, "_static_target_pos"):
             # 只在第一次初始化时设置
-            self._static_target_pos = torch.tensor([1.0, 0.0, self.cfg.env_params.target.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
-            self._static_obstacle_pos = torch.tensor([0.0, 0.0, self.cfg.env_params.obstacle.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
+            self._static_target_pos = torch.tensor([1.8, 1.1, self.cfg.env_params.target.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
+            self._static_obstacle_pos = torch.tensor([1.43, 1.25, self.cfg.env_params.obstacle.size[2]*0.5], device=self.device).repeat(self.num_envs, 1)
             self.cfg.env_params.obstacle.r = float(0.5 * math.sqrt(self.cfg.env_params.obstacle.size[0] ** 2 + self.cfg.env_params.obstacle.size[1] ** 2))
             self.cfg.env_params.target.r = float(0.5 * math.sqrt(self.cfg.env_params.target.size[0] ** 2 + self.cfg.env_params.target.size[1] ** 2))
             self.cfg.env_params.robot_r = 0.2  # 20cm 半径
@@ -543,7 +557,7 @@ class JetautoNavigationEnv(DirectRLEnv):
         obstacle_xy = obstacle_pos[:, :2]
 
         # 2) 从配置读房间长宽 / 半径等
-        room_size = torch.tensor([3.0, 3.0], device=self.device)    #TODO change to cfg
+        room_size = torch.tensor([2.5, 2.65], device=self.device)    #TODO change to cfg
 
         # 3) 九宫格格子索引（可配置）
         # 格子编号规则（ix,iy）：
@@ -562,18 +576,31 @@ class JetautoNavigationEnv(DirectRLEnv):
         obs_cell = int(4)
 
         # 4) 批量采样机器人 XY（不需要 env_ids 内容本身，只需要 num_envs）
-        robot_xy = sample_safe_rect_positions_grid_torch(
+        # robot_xy = sample_safe_rect_positions_grid_torch(
+        #     num_envs=len(env_ids),
+        #     target_cell_idx=tgt_cell,
+        #     obstacle_cell_idx=obs_cell,
+        #     room_size=room_size,
+        #     robot_radius= self.cfg.env_params.robot_r,
+        #     target_radius=self.cfg.env_params.obstacle.r,
+        #     obstacle_radius=self.cfg.env_params.target.r,
+        #     target_xy=target_xy,
+        #     obstacle_xy=obstacle_xy,
+        #     margin=0.05,
+        #     max_tries=10,
+        # )
+
+        def sample_in_rect(num_envs, x1, x2, y1, y2, device=None, dtype=torch.float32):
+            # 生成 [num_envs, 2] 的 (x,y)
+            rx = torch.rand(num_envs, device=device, dtype=dtype) * (x2 - x1) + x1
+            ry = torch.rand(num_envs, device=device, dtype=dtype) * (y2 - y1) + y1
+            return torch.stack((rx, ry), dim=-1)
+
+        robot_xy = sample_in_rect(
             num_envs=len(env_ids),
-            target_cell_idx=tgt_cell,
-            obstacle_cell_idx=obs_cell,
-            room_size=room_size,
-            robot_radius= self.cfg.env_params.robot_r,
-            target_radius=self.cfg.env_params.obstacle.r,
-            obstacle_radius=self.cfg.env_params.target.r,
-            target_xy=target_xy,
-            obstacle_xy=obstacle_xy,
-            margin=0.05,
-            max_tries=10,
+            x1=0.3, x2=0.8,
+            y1=1.1, y2=2.0,
+            device="cuda"
         )
 
         # 5) 组装 root_states 写回（用 env_ids 进行索引）
@@ -636,105 +663,95 @@ class JetautoNavigationEnv(DirectRLEnv):
         self.curr_vis[env_ids] = 0.0
         self.prev_vis[env_ids] = 0.0
 
-
+        self.gs_feature.reset(env_ids)
 
 
 
 
 @torch.jit.script
 def sample_safe_rect_positions_grid_torch(
-    num_envs: int,                               # 本次要重置的环境个数 (len(env_ids))
-    target_cell_idx: int,                 # 0..8
-    obstacle_cell_idx: int,               # 0..8
-    room_size: torch.Tensor,             # [2] -> (L, W)
+    num_envs: int,
+    target_cell_idx: int,
+    obstacle_cell_idx: int,
+    room_size: torch.Tensor,      # [L, W]
     robot_radius: float,
     target_radius: float,
     obstacle_radius: float,
-    target_xy: torch.Tensor,              # [M, 2] 每个 env 的目标中心 (x,y)
-    obstacle_xy: torch.Tensor,            # [M, 2] 每个 env 的障碍中心 (x,y)
+    target_xy: torch.Tensor,      # [M,2] 现在 assumed 已经是左下角坐标
+    obstacle_xy: torch.Tensor,    # [M,2]
     margin: float = 0.05,
     max_tries: int = 10,
-) -> torch.Tensor:
-    
+):
     """
     3x3 九宫格采样（长方形房间；只对贴墙侧内缩；基于半径的碰撞判定）。
     - 仅当格子的某一侧恰好是房间外墙时，才在该侧内缩 (robot_radius + margin)。
     - 中央格不缩，边格缩一侧，角格缩两侧。
     - 如果整体房间在任何轴向上都放不下机器人：抛 ValueError。
     - 与目标/障碍的碰撞：dist > (r_robot + r_obj + margin)。
+        左下角 (0,0) 作为房间坐标原点的版本。
+        房间范围: x ∈ [0, L], y ∈ [0, W]
     """
 
-    # 基本量
     L, W = room_size[0], room_size[1]
-    half_L = L * 0.5
-    half_W = W * 0.5
     pad = robot_radius + margin
 
-    # 房间过小：抛异常（TorchScript 允许 RuntimeError）
+    # 房间太小
     if (L <= 2.0 * pad) or (W <= 2.0 * pad):
         raise RuntimeError("Room too small for robot size + margin.")
 
-    # 3x3 网格边界（形状 [4]）
-    x_edges = torch.linspace(-half_L, half_L, 4, device=room_size.device, dtype=room_size.dtype)
-    y_edges = torch.linspace(-half_W, half_W, 4, device=room_size.device, dtype=room_size.dtype)
+    # 3x3 网格边界（原点在左下）
+    x_edges = torch.linspace(0.0, L, 4, device=room_size.device, dtype=room_size.dtype)
+    y_edges = torch.linspace(0.0, W, 4, device=room_size.device, dtype=room_size.dtype)
 
-    # 原始 cell 边界：cell_bounds[9,4] = [x1,x2,y1,y2]
+    # cell_bounds: [9,4] = [x1, x2, y1, y2]
     cell_bounds = torch.empty((9, 4), device=room_size.device, dtype=room_size.dtype)
-    # 行优先: 0 1 2 / 3 4 5 / 6 7 8
-    # ix = 0,1,2 (列) ; iy = 0,1,2 (行, 0=下,2=上)
+
     idx = 0
-    for iy in range(3):
-        for ix in range(3):
+    for iy in range(3):         # 0 = bottom row
+        for ix in range(3):     # 0 = left column
             cell_bounds[idx, 0] = x_edges[ix]
             cell_bounds[idx, 1] = x_edges[ix + 1]
             cell_bounds[idx, 2] = y_edges[iy]
             cell_bounds[idx, 3] = y_edges[iy + 1]
             idx += 1
 
-    # 只对贴墙侧内缩 pad
+    # 内缩
     ix = torch.arange(9, device=room_size.device) % 3
     iy = torch.arange(9, device=room_size.device) // 3
 
-    # shrink 左/右/下/上侧
-    # 左墙: ix==0 → x1+=pad
-    cell_bounds[:, 0] = cell_bounds[:, 0] + torch.where(ix == 0, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
-    # 右墙: ix==2 → x2-=pad
-    cell_bounds[:, 1] = cell_bounds[:, 1] - torch.where(ix == 2, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
-    # 下墙: iy==0 → y1+=pad
-    cell_bounds[:, 2] = cell_bounds[:, 2] + torch.where(iy == 0, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
-    # 上墙: iy==2 → y2-=pad
-    cell_bounds[:, 3] = cell_bounds[:, 3] - torch.where(iy == 2, torch.as_tensor(pad, device=room_size.device, dtype=room_size.dtype), torch.as_tensor(0.0, device=room_size.device, dtype=room_size.dtype))
+    # 左墙: ix == 0
+    cell_bounds[:, 0] += torch.where(ix == 0, pad, 0.0)
+    # 右墙: ix == 2
+    cell_bounds[:, 1] -= torch.where(ix == 2, pad, 0.0)
+    # 下墙: iy == 0
+    cell_bounds[:, 2] += torch.where(iy == 0, pad, 0.0)
+    # 上墙: iy == 2
+    cell_bounds[:, 3] -= torch.where(iy == 2, pad, 0.0)
 
-    # 禁用目标/障碍所在的两个格子
+    # 禁用目标和障碍物所在格子
     keep_mask = torch.ones(9, dtype=torch.bool, device=room_size.device)
     keep_mask[target_cell_idx] = False
     keep_mask[obstacle_cell_idx] = False
 
-    usable_cells = cell_bounds[keep_mask]        # [7,4]
+    usable_cells = cell_bounds[keep_mask]
     if usable_cells.shape[0] == 0:
         raise RuntimeError("No usable grid cells after wall-side shrinking.")
 
-    # 碰撞安全距离
     safe_dist_t = robot_radius + target_radius + margin
     safe_dist_o = robot_radius + obstacle_radius + margin
 
-    # 输出与状态
     robot_xy = torch.zeros((num_envs, 2), device=room_size.device, dtype=room_size.dtype)
     placed = torch.zeros(num_envs, dtype=torch.bool, device=room_size.device)
 
-    # 反复尝试（最多 max_tries 次）
     for _ in range(max_tries):
-        # 为每个 env 随机选择一个可用格子
-        idx7 = torch.randint(low=0, high=usable_cells.shape[0], size=(num_envs,), device=room_size.device)
-        sel = usable_cells.index_select(0, idx7)  # [M,4]
+        idx7 = torch.randint(0, usable_cells.shape[0], (num_envs,), device=room_size.device)
+        sel = usable_cells.index_select(0, idx7)
         x1, x2, y1, y2 = sel[:, 0], sel[:, 1], sel[:, 2], sel[:, 3]
 
-        # 在该格子的有效矩形内均匀采样
-        rx = torch.rand(num_envs, device=room_size.device, dtype=room_size.dtype) * (x2 - x1) + x1
-        ry = torch.rand(num_envs, device=room_size.device, dtype=room_size.dtype) * (y2 - y1) + y1
-        pos = torch.stack((rx, ry), dim=-1)  # [M,2]
+        rx = torch.rand(num_envs, device=room_size.device) * (x2 - x1) + x1
+        ry = torch.rand(num_envs, device=room_size.device) * (y2 - y1) + y1
+        pos = torch.stack((rx, ry), dim=-1)
 
-        # 基于半径的碰撞检测（每 env 与各自 target/obstacle）
         dist_t = torch.linalg.norm(pos - target_xy, dim=-1)
         dist_o = torch.linalg.norm(pos - obstacle_xy, dim=-1)
         ok = (dist_t > safe_dist_t) & (dist_o > safe_dist_o) & (~placed)
@@ -745,12 +762,12 @@ def sample_safe_rect_positions_grid_torch(
         if bool(placed.all()):
             break
 
-    # 兜底：未放置成功者 → 把其选中格子的中心作为位置
+    # 兜底
     if not bool(placed.all()):
-        idx7 = torch.randint(low=0, high=usable_cells.shape[0], size=(num_envs,), device=room_size.device)
+        idx7 = torch.randint(0, usable_cells.shape[0], (num_envs,), device=room_size.device)
         sel = usable_cells.index_select(0, idx7)
-        cx = (sel[:, 0] + sel[:, 1]) * 0.5
-        cy = (sel[:, 2] + sel[:, 3]) * 0.5
+        cx = 0.5 * (sel[:, 0] + sel[:, 1])
+        cy = 0.5 * (sel[:, 2] + sel[:, 3])
         center_pos = torch.stack((cx, cy), dim=-1)
         robot_xy = torch.where((~placed).unsqueeze(-1), center_pos, robot_xy)
 
