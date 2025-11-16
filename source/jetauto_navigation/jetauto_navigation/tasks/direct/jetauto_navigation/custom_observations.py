@@ -134,20 +134,6 @@ class GSServer:
         arr = np.frombuffer(buf, dtype=np.uint8).reshape(N, FLAT)
         return arr
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def start(self):
         atexit.register(self.close)
         self.running = True

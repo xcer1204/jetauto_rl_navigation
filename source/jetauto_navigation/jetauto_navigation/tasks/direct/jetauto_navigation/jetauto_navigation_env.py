@@ -71,8 +71,8 @@ class JetautoNavigationEnv(DirectRLEnv):
             model_name="resnet18",
             device=self.device,
             num_envs=self.num_envs,
-            H=180,
-            W=320,
+            H=738,
+            W=994,
         )
         # feat = ImageFeaturesNoHead(obs_term_cfg, env=self)
         # print(feat._model)
