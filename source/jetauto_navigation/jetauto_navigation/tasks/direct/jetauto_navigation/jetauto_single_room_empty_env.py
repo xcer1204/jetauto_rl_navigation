@@ -64,9 +64,14 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         c = self.cfg.env_params.camera
 
         # Background 3DGS
-        bg_scale = 0.23994040084788124
-        bg_pos = (-0.206631, 0.343036, 0.754697)
-        bg_rot = (-0.05688028042359017, -0.00610525184353289, -0.0018002532294618672, 0.9983607157171052)
+        bg_scale = 0.377956201502593
+        # bg_scale = 0.23994040084788124
+        bg_pos = (0.087843 0.731991 0.207926)
+        # bg_pos = (-0.206631, 0.343036, 0.754697)
+        bg_rot = (0.04357, 0.03160, -0.03116, 0.99805)
+        # bg_rot = (-0.05688028042359017, -0.00610525184353289, -0.0018002532294618672, 0.9983607157171052)
+        
+
         bg_usd_cfg = sim_utils.UsdFileCfg(
             usd_path="/home/zgao/video_data_process/results_lab1211/3dgs_output/point_cloud/iteration_30000/lab.usdz",
             scale=(bg_scale, bg_scale, bg_scale),
