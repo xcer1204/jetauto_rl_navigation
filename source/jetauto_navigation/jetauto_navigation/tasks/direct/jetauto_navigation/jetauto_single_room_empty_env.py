@@ -66,14 +66,15 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         # Background 3DGS
         bg_scale = 0.377956201502593
         # bg_scale = 0.23994040084788124
-        bg_pos = (0.087843 0.731991 0.207926)
+        bg_pos = (0.087843, 0.731991, 0.207926)
         # bg_pos = (-0.206631, 0.343036, 0.754697)
         bg_rot = (0.04357, 0.03160, -0.03116, 0.99805)
         # bg_rot = (-0.05688028042359017, -0.00610525184353289, -0.0018002532294618672, 0.9983607157171052)
         
 
         bg_usd_cfg = sim_utils.UsdFileCfg(
-            usd_path="/home/zgao/video_data_process/results_lab1211/3dgs_output/point_cloud/iteration_30000/lab.usdz",
+            usd_path="/home/zgao/Downloads/corridor.usdz",
+            # usd_path="/home/zgao/video_data_process/results_lab1211/3dgs_output/point_cloud/iteration_30000/lab.usdz",
             scale=(bg_scale, bg_scale, bg_scale),
         )
         sim_utils.spawn_from_usd(
@@ -93,7 +94,9 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
             spawn=sim_utils.PinholeCameraCfg(),
             offset=CameraCfg.OffsetCfg(
                 pos=(0.0, -0.1, 0.0),
-                rot=(0.0, 0.0, 0.60876, 0.79335),
+                # rot=(0.0, 0.0, 0.60876, 0.79335),
+                rot=(0.0, 0.0, 0.6820, 0.7314), #TODO check the real camera pose on jetauto
+
                 convention="parent",
             ),
         )
@@ -229,7 +232,9 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         success = curr_vis >= 0.99
 
         failed = self.collision_mask
-        terminated = success | failed
+        terminated = success
+        # terminated = success | failed
+
 
         truncated = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -263,22 +268,44 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
             ry = torch.rand(num_envs, device=device, dtype=dtype) * (y2 - y1) + y1
             return torch.stack((rx, ry), dim=-1)
 
-        robot_xy = sample_in_rect(
-            num_envs=len(env_ids),
-            x1=-0.1,
-            x2=0.25,
-            y1=-0.8,
-            y2=-0.6,
-            device=self.device,
-        )
+        # robot_xy = sample_in_rect(
+        #     num_envs=len(env_ids),
+        #     x1=-0.1,
+        #     x2=0.25,
+        #     y1=-0.8,
+        #     y2=-0.6,
+        #     device=self.device,
+        # )
+
+        # print("robot_xy:", robot_xy)
+
+        # robot_xy =torch.tensor([[0.0053, 1.5290]], device=self.device) #start1
+        # robot_xy =torch.tensor([[0.1053, 1.4290]], device=self.device) #start2
+        robot_xy =torch.tensor([[0.1153, 1.6290]], device=self.device) #start3
+
+        # robot_xy =torch.tensor([[-0.4053, 2.1290]], device=self.device) #goal  
 
         robot_pos = torch.cat([robot_xy, torch.zeros(len(env_ids), 1, device=self.device)], dim=-1)
 
         root_states_a = self.robot_a.data.default_root_state[env_ids].clone()
         root_states_a[:, :3] = self.scene.env_origins[env_ids] + robot_pos
 
-        yaw = (torch.rand(len(env_ids), device=self.device) - 0.5) * 2 * math.pi
-        quat = math_utils.quat_from_angle_axis(yaw, torch.tensor([0.0, 0.0, 1.0], device=self.device))
+        # yaw = (torch.rand(len(env_ids), device=self.device) - 0.5) * 2 * math.pi
+
+        x = robot_xy[:, 0]
+        y = robot_xy[:, 1]
+
+        yaw = torch.atan2(-y, -x)  # 指向原点的朝向（z-up，只算yaw）
+        # 然后四元数（w,x,y,z）
+        half = 0.5 * yaw
+        quat = torch.stack([torch.cos(half),
+                            torch.zeros_like(half),
+                            torch.zeros_like(half),
+                            torch.sin(half)], dim=-1)
+
+        # quat = math_utils.quat_from_angle_axis(yaw, torch.tensor([0.0, 0.0, 1.0], device=self.device))
+
+
         root_states_a[:, 3:7] = quat
 
         self.robot_a.write_root_pose_to_sim(root_states_a[:, :7], env_ids)
