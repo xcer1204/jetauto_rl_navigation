@@ -51,9 +51,38 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         )
         self.resnet_extractor = ImageFeaturesNoHead(obs_term_cfg, env=self)
 
+        # Real->sim alignment (measured from box alignment results)
+        self._align_scale = 0.3664808278887077
+        self._align_rot_xyzw = torch.tensor([0.04309, 0.03407, -0.02809, 0.99810], device=self.device)
+        self._align_translation = torch.tensor([0.089711, 0.740089, 0.192696], device=self.device)
+
+        # Compute sim-space bounds for the real rectangle [(1.2,-0.6), (-0.6,-0.6), (1.2,1.8), (-0.6,1.8), z=0]
+        real_rect = torch.tensor(
+            [
+                [1.2, -0.6, 0.0],
+                [-0.6, -0.6, 0.0],
+                [1.2, 1.8, 0.0],
+                [-0.6, 1.8, 0.0],
+            ],
+            device=self.device,
+        )
+        sim_rect = self._real_to_sim(real_rect)
+        self._sim_bounds_min = sim_rect.min(dim=0).values[:2]
+        self._sim_bounds_max = sim_rect.max(dim=0).values[:2]
+
         # placeholders for logical target/obstacle positions (not spawned)
         self._target_pos_current = torch.zeros(self.num_envs, 3, device=self.device)
         self._obstacle_pos_current = torch.zeros(self.num_envs, 3, device=self.device)
+
+    def _real_to_sim(self, pts_real: torch.Tensor) -> torch.Tensor:
+        """Apply the measured real->sim similarity transform to points."""
+        quat_xyzw = self._align_rot_xyzw
+        quat_wxyz = torch.stack((quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2])).to(
+            device=pts_real.device
+        )
+        quat_wxyz = quat_wxyz.expand(pts_real.shape[0], -1)
+        rotated = math_utils.quat_apply(quat_wxyz, pts_real)
+        return rotated * self._align_scale + self._align_translation
 
     def _setup_scene(self):
         """Build a single room with background only (no physical walls/targets/obstacles)."""
@@ -64,11 +93,11 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         c = self.cfg.env_params.camera
 
         # Background 3DGS
-        bg_scale = 0.3664808278887077
+        bg_scale = self._align_scale
         # bg_scale = 0.23994040084788124
-        bg_pos = (0.089711, 0.740089, 0.192696)
+        bg_pos = tuple(self._align_translation.tolist())
         # bg_pos = (-0.206631, 0.343036, 0.754697)
-        bg_rot = (0.04309, 0.03407, -0.02809, 0.99810)
+        bg_rot = tuple(self._align_rot_xyzw.tolist())
         # bg_rot = (-0.05688028042359017, -0.00610525184353289, -0.0018002532294618672, 0.9983607157171052)
         
 
@@ -199,12 +228,11 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         robot_x = robot_xy[:, 0]
         robot_y = robot_xy[:, 1]
 
-        w_cfg = self.cfg.env_params.walls
-        half_x = w_cfg.size[0] * 0.5
-        half_y = w_cfg.size_vert[1] * 0.5
         margin = self.cfg.env_params.walls.wall_margin
-        inside_x = (robot_x >= -half_x + margin) & (robot_x <= half_x - margin)
-        inside_y = (robot_y >= -half_y + margin) & (robot_y <= half_y - margin)
+        min_x, min_y = self._sim_bounds_min
+        max_x, max_y = self._sim_bounds_max
+        inside_x = (robot_x >= min_x + margin) & (robot_x <= max_x - margin)
+        inside_y = (robot_y >= min_y + margin) & (robot_y <= max_y - margin)
         wall_collision = ~(inside_x & inside_y)
 
         obs_xy = self._obstacle_pos_current[:, :2].unsqueeze(1)
@@ -279,9 +307,8 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
         # print("robot_xy:", robot_xy)
 
-        # robot_xy =torch.tensor([[0.0053, 1.5290]], device=self.device) #start1
-        # robot_xy =torch.tensor([[0.1053, 1.4290]], device=self.device) #start2
-        robot_xy =torch.tensor([[0.1153, 1.6290]], device=self.device) #start3
+        center_xy = 0.5 * (self._sim_bounds_min + self._sim_bounds_max)
+        robot_xy = center_xy.unsqueeze(0).expand(len(env_ids), -1)
 
         # robot_xy =torch.tensor([[-0.4053, 2.1290]], device=self.device) #goal  
 
