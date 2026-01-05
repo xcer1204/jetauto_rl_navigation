@@ -104,7 +104,37 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_pickle, dump_yaml
+
+try:
+    from isaaclab.utils.io import dump_pickle, dump_yaml
+except Exception:
+    import pickle
+    import yaml
+
+    def _serialize_for_yaml(data):
+        if hasattr(data, "to_dict"):
+            try:
+                return data.to_dict()
+            except Exception:
+                pass
+        if hasattr(data, "dict"):
+            try:
+                return data.dict()
+            except Exception:
+                pass
+        return data
+
+    def dump_yaml(path, data):
+        with open(path, "w", encoding="utf-8") as f:
+            payload = _serialize_for_yaml(data)
+            try:
+                yaml.safe_dump(payload, f, sort_keys=False)
+            except Exception:
+                f.write(str(payload))
+
+    def dump_pickle(path, data):
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
 
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
@@ -165,6 +195,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir)
 
     # dump the configuration into log-directory
+    os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
