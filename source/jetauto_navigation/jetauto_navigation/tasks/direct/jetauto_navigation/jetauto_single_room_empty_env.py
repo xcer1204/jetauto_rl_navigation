@@ -23,6 +23,11 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
     cfg: JetautoSingleRoomEnvCfg
 
+    # alignment constants (real -> sim)
+    ALIGN_SCALE = 0.3664808278887077
+    ALIGN_ROT_XYZW = (0.04309, 0.03407, -0.02809, 0.99810)
+    ALIGN_TRANSLATION = (0.089711, 0.740089, 0.192696)
+
     def __init__(self, cfg: JetautoSingleRoomEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -52,9 +57,9 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         self.resnet_extractor = ImageFeaturesNoHead(obs_term_cfg, env=self)
 
         # Real->sim alignment (measured from box alignment results)
-        self._align_scale = 0.3664808278887077
-        self._align_rot_xyzw = torch.tensor([0.04309, 0.03407, -0.02809, 0.99810], device=self.device)
-        self._align_translation = torch.tensor([0.089711, 0.740089, 0.192696], device=self.device)
+        self._align_scale = self.ALIGN_SCALE
+        self._align_rot_xyzw = torch.tensor(self.ALIGN_ROT_XYZW, device=self.device)
+        self._align_translation = torch.tensor(self.ALIGN_TRANSLATION, device=self.device)
 
         # Compute sim-space bounds for the real rectangle [(1.2,-0.6), (-0.6,-0.6), (1.2,1.8), (-0.6,1.8), z=0]
         real_rect = torch.tensor(
@@ -92,17 +97,26 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
         c = self.cfg.env_params.camera
 
+        # Real->sim alignment (measured from box alignment results)
+        self._align_scale = self.ALIGN_SCALE
+        self._align_rot_xyzw = torch.tensor(self.ALIGN_ROT_XYZW, device=self.device)
+        self._align_translation = torch.tensor(self.ALIGN_TRANSLATION, device=self.device)
+
         # Background 3DGS
         bg_scale = self._align_scale
+        bg_scale = self.ALIGN_SCALE
         # bg_scale = 0.23994040084788124
         bg_pos = tuple(self._align_translation.tolist())
+        bg_pos = self.ALIGN_TRANSLATION
         # bg_pos = (-0.206631, 0.343036, 0.754697)
         bg_rot = tuple(self._align_rot_xyzw.tolist())
+        bg_rot = self.ALIGN_ROT_XYZW
         # bg_rot = (-0.05688028042359017, -0.00610525184353289, -0.0018002532294618672, 0.9983607157171052)
-        
+
 
         bg_usd_cfg = sim_utils.UsdFileCfg(
-            usd_path="/home/zgao/Downloads/corridor.usdz",
+            usd_path="/home/ubuntu/xc_isaac/jetauto_rl_navigation-main/source/jetauto_navigation/jetauto_navigation/tasks/direct/jetauto_navigation/source/corridor.usdz",
+            # usd_path="/home/zgao/Downloads/corridor.usdz",
             # usd_path="/home/zgao/video_data_process/results_lab1211/3dgs_output/point_cloud/iteration_30000/lab.usdz",
             scale=(bg_scale, bg_scale, bg_scale),
         )
@@ -124,7 +138,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
             offset=CameraCfg.OffsetCfg(
                 pos=(0.0, -0.1, 0.0),
                 # rot=(0.0, 0.0, 0.60876, 0.79335),
-                rot=(0.0, 0.0, 0.6820, 0.7314), #TODO check the real camera pose on jetauto
+                rot=(0.0, 0.0, 0.6820, 0.7314),  # TODO check the real camera pose on jetauto
 
                 convention="parent",
             ),
@@ -251,9 +265,33 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         }
 
     def _get_rewards(self) -> torch.Tensor:
+        # 固定目标位置（世界系）
+        target_xy = torch.tensor([0.8, 0.0], device=self.device)
+
+        # 机器人当前位置
+        robot_xy = self.robot_a.data.root_pos_w[:, :2]
+        dist = torch.norm(robot_xy - target_xy, dim=-1)  # 距离越小越好
+
+        # 奖励：负距离 + 成功奖励（可调参数）
+        success_bonus = 1.0
+        reward = -dist
+        with torch.no_grad():
+            success = self.curr_vis.clamp(0.0, 1.0) >= 0.99
+            reward = reward + success_bonus * success.to(reward.dtype)
+
+        # 记录日志指标
         self.prev_vis = self.curr_vis.clone()
         self.extras["curr_vis"] = float(self.curr_vis.mean().item())
-        return torch.zeros(self.num_envs, device=self.device)
+        self.extras["dist_to_target"] = float(dist.mean().item())
+        self.extras["success"] = bool(self.curr_vis.mean().item() >= 0.99)
+
+        return reward
+
+
+    # def _get_rewards(self) -> torch.Tensor:
+    #     self.prev_vis = self.curr_vis.clone()
+    #     self.extras["curr_vis"] = float(self.curr_vis.mean().item())
+    #     return torch.zeros(self.num_envs, device=self.device)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         curr_vis = self.curr_vis.clamp(0.0, 1.0)
@@ -262,7 +300,6 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         failed = self.collision_mask
         terminated = success
         # terminated = success | failed
-
 
         truncated = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -280,8 +317,10 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
             target_h = self.cfg.env_params.target.size[2] * 0.5
             obstacle_h = self.cfg.env_params.obstacle.size[2] * 0.5
             self._static_target_pos = torch.tensor([0.0, 0.0, target_h], device=self.device).repeat(self.num_envs, 1)
-            self._static_obstacle_pos = torch.tensor([0.1, -0.385, obstacle_h], device=self.device).repeat(self.num_envs, 1)
-            self.cfg.env_params.obstacle.r = float(0.5 * math.sqrt(self.cfg.env_params.obstacle.size[0] ** 2 + self.cfg.env_params.obstacle.size[1] ** 2))
+            self._static_obstacle_pos = torch.tensor([0.1, -0.385, obstacle_h], device=self.device).repeat(
+                self.num_envs, 1)
+            self.cfg.env_params.obstacle.r = float(
+                0.5 * math.sqrt(self.cfg.env_params.obstacle.size[0] ** 2 + self.cfg.env_params.obstacle.size[1] ** 2))
             self.cfg.env_params.target.r = 0.1
             self.cfg.env_params.robot_r = 0.2
 
@@ -289,7 +328,8 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         target_pos[:, :2] += torch.randn(len(env_ids), 2, device=self.device) * self.cfg.env_params.reset.target_noise
 
         obstacle_pos = self._static_obstacle_pos[env_ids].clone()
-        obstacle_pos[:, :2] += torch.randn(len(env_ids), 2, device=self.device) * self.cfg.env_params.reset.obstacle_noise
+        obstacle_pos[:, :2] += torch.randn(len(env_ids), 2,
+                                           device=self.device) * self.cfg.env_params.reset.obstacle_noise
 
         def sample_in_rect(num_envs, x1, x2, y1, y2, device=None, dtype=torch.float32):
             rx = torch.rand(num_envs, device=device, dtype=dtype) * (x2 - x1) + x1
@@ -310,7 +350,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         center_xy = 0.5 * (self._sim_bounds_min + self._sim_bounds_max)
         robot_xy = center_xy.unsqueeze(0).expand(len(env_ids), -1)
 
-        # robot_xy =torch.tensor([[-0.4053, 2.1290]], device=self.device) #goal  
+        # robot_xy =torch.tensor([[-0.4053, 2.1290]], device=self.device) #goal
 
         robot_pos = torch.cat([robot_xy, torch.zeros(len(env_ids), 1, device=self.device)], dim=-1)
 
@@ -331,7 +371,6 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
                             torch.sin(half)], dim=-1)
 
         # quat = math_utils.quat_from_angle_axis(yaw, torch.tensor([0.0, 0.0, 1.0], device=self.device))
-
 
         root_states_a[:, 3:7] = quat
 
