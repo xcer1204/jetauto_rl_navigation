@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import torch
+import rpyc
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
@@ -43,7 +44,9 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         self.dof_idx, _ = self.robot_a.find_joints(self.cfg.dof_names)
 
         self.prev_vis = torch.zeros(self.num_envs, device=self.device)
-        self.curr_vis = torch.zeros(self.num_envs, device=self.device)
+        self.curr_vis = torch.zeros(self.num_envs, device=self.device)       # 用于 rpyc ratio
+        self.curr_vis_sem = torch.zeros(self.num_envs, device=self.device)  # 仅用于语义分割debug
+
         self.collision_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         obs_term_cfg = ObservationTermCfg(
@@ -64,8 +67,8 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         # Compute sim-space bounds for the real rectangle [(1.2,-0.6), (-0.6,-0.6), (1.2,1.8), (-0.6,1.8), z=0]
         real_rect = torch.tensor(
             [
-                [1.2, -0.6, 0.0],
-                [-0.6, -0.6, 0.0],
+                [1.2, 0.9, 0.0],
+                [-0.6, 0.9, 0.0],
                 [1.2, 1.8, 0.0],
                 [-0.6, 1.8, 0.0],
             ],
@@ -78,6 +81,12 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         # placeholders for logical target/obstacle positions (not spawned)
         self._target_pos_current = torch.zeros(self.num_envs, 3, device=self.device)
         self._obstacle_pos_current = torch.zeros(self.num_envs, 3, device=self.device)
+
+        # --- ratio RPC client ---
+        self._ratio_rpc = rpyc.connect("localhost", 18862, config={"allow_pickle": True})
+        self._ratio_every = 8   # 每 8 step 更新一次（建议先大一点，避免太慢）
+        self._ratio_step = 0
+
 
     def _real_to_sim(self, pts_real: torch.Tensor) -> torch.Tensor:
         """Apply the measured real->sim similarity transform to points."""
@@ -195,6 +204,11 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         self._lock_planar(self.robot_a, 0.01)
 
     def _get_observations(self) -> dict:
+        self._ratio_step += 1
+        if (self._ratio_step % self._ratio_every) == 0:
+            self._query_ratio_from_rpc()
+
+
         with torch.no_grad():
             resnet_features = self.resnet_extractor(
                 env=self,
@@ -232,7 +246,9 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         visible_ratio = torch.zeros_like(visible_pixels)
         valid_envs = has_target_tensor.view(-1)
         visible_ratio[valid_envs] = visible_pixels[valid_envs] / float(h * w + 1e-6)
-        self.curr_vis = visible_ratio
+        # self.curr_vis = visible_ratio
+        self.curr_vis_sem = visible_ratio
+
 
         self._feat_hist = torch.roll(self._feat_hist, shifts=-1, dims=1)
         self._feat_hist[:, -1, :] = resnet_features
@@ -265,43 +281,58 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         }
 
     def _get_rewards(self) -> torch.Tensor:
-        # 固定目标位置（世界系）
-        target_xy = torch.tensor([0.8, 0.0], device=self.device)
+        """
+        Composite reward:
+            O_t = occlusion ratio = 1 - visible_ratio
+            ΔO  = O_{t-1} - O_t  (positive when occlusion decreases)
+            P_t = +5 if O_t == 0 else -0.1
+            R   = ΔO + P_t
+        """
 
-        # 机器人当前位置
-        robot_xy = self.robot_a.data.root_pos_w[:, :2]
-        dist = torch.norm(robot_xy - target_xy, dim=-1)  # 距离越小越好
+        # 1) current / previous occlusion ratio
+        vis_t = self.curr_vis.clamp(0.0, 1.0)      # rpyc returned visible ratio
+        vis_prev = self.prev_vis.clamp(0.0, 1.0)
 
-        # 奖励：负距离 + 成功奖励（可调参数）
-        success_bonus = 1.0
-        reward = -dist
-        with torch.no_grad():
-            success = self.curr_vis.clamp(0.0, 1.0) >= 0.99
-            reward = reward + success_bonus * success.to(reward.dtype)
+        O_t = (1.0 - vis_t).clamp(0.0, 1.0)
+        O_prev = (1.0 - vis_prev).clamp(0.0, 1.0)
 
-        # 记录日志指标
+        # 2) dense reward: occlusion decrease is positive
+        delta_O = O_prev - O_t
+
+        # 3) additional term P_t
+        eps = 1e-6
+        P_t = torch.where(O_t <= eps, torch.full_like(O_t, 5.0), torch.full_like(O_t, -0.1))
+
+        # 4) final reward
+        reward = delta_O + P_t
+
+        # 5) update prev for next step (very important)
         self.prev_vis = self.curr_vis.clone()
-        self.extras["curr_vis"] = float(self.curr_vis.mean().item())
-        self.extras["dist_to_target"] = float(dist.mean().item())
-        self.extras["success"] = bool(self.curr_vis.mean().item() >= 0.99)
+
+        # 6) logging
+        self.extras["vis_ratio"] = float(vis_t.mean().item())
+        self.extras["occ_ratio"] = float(O_t.mean().item())
+        self.extras["delta_O"] = float(delta_O.mean().item())
+        self.extras["P_t"] = float(P_t.mean().item())
+        self.extras["success"] = bool((O_t <= eps).any().item())
 
         return reward
 
-
-    # def _get_rewards(self) -> torch.Tensor:
-    #     self.prev_vis = self.curr_vis.clone()
-    #     self.extras["curr_vis"] = float(self.curr_vis.mean().item())
-    #     return torch.zeros(self.num_envs, device=self.device)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         curr_vis = self.curr_vis.clamp(0.0, 1.0)
         success = curr_vis >= 0.99
 
         failed = self.collision_mask
-        terminated = success
-        # terminated = success | failed
+        # terminated = success
+        terminated = success | failed
 
         truncated = self.episode_length_buf >= self.max_episode_length - 1
+
+        if success.any().item():
+            print("Episode success!")
+        if failed.any().item():
+            print("Episode failed due to collision!")
 
         self.extras["success"] = bool(success.any().item())
         self.extras["collision"] = bool(self.collision_mask.any().item())
@@ -389,3 +420,58 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         self.collision_mask[env_ids] = False
         self.curr_vis[env_ids] = 0.0
         self.prev_vis[env_ids] = 0.0
+        self.curr_vis_sem[env_ids] = 0.0
+
+
+
+    def _quat_xyzw_to_wxyz(self, q_xyzw: torch.Tensor) -> torch.Tensor:
+        # q_xyzw: (...,4)
+        return torch.stack((q_xyzw[..., 3], q_xyzw[..., 0], q_xyzw[..., 1], q_xyzw[..., 2]), dim=-1)
+
+    def _quat_mul_wxyz(self, q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+        # Hamilton product, both wxyz
+        w1, x1, y1, z1 = q1.unbind(-1)
+        w2, x2, y2, z2 = q2.unbind(-1)
+        return torch.stack((
+            w1*w2 - x1*x2 - y1*y2 - z1*z2,
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            w1*z2 + x1*y2 - y1*x2 + z1*w2
+        ), dim=-1)
+
+    def _query_ratio_from_rpc(self) -> None:
+        cam_pos_w = getattr(self._camera_a.data, "pos_w", None)
+        cam_quat_w = getattr(self._camera_a.data, "quat_w", None)  # usually wxyz
+
+        if cam_pos_w is None or cam_quat_w is None:
+            root_pos = self.robot_a.data.root_pos_w
+            root_q_wxyz = self.robot_a.data.root_quat_w
+
+            off_pos = torch.tensor([0.0, -0.1, 0.0], device=self.device).view(1, 3).repeat(self.num_envs, 1)
+            off_q_xyzw = torch.tensor([0.0, 0.0, 0.6820, 0.7314], device=self.device).view(1, 4).repeat(self.num_envs, 1)
+            off_q_wxyz = self._quat_xyzw_to_wxyz(off_q_xyzw)
+
+            cam_pos_w = root_pos + math_utils.quat_apply(root_q_wxyz, off_pos)
+            cam_quat_w = self._quat_mul_wxyz(root_q_wxyz, off_q_wxyz)
+
+        R_c2w = math_utils.matrix_from_quat(cam_quat_w)
+        E = cam_pos_w.shape[0]
+        c2w = torch.eye(4, device=self.device).unsqueeze(0).repeat(E, 1, 1)
+        c2w[:, :3, :3] = R_c2w
+        c2w[:, :3, 3] = cam_pos_w
+        w2c = torch.inverse(c2w)
+
+        w = int(self.cfg.env_params.camera.width)
+        h = int(self.cfg.env_params.camera.height)
+
+        fovx = 1.5701
+        fovy = 1.0260
+        fx = w / (2.0 * math.tan(fovx / 2.0))
+        fy = h / (2.0 * math.tan(fovy / 2.0))
+        cx = w * 0.5
+        cy = h * 0.5
+
+        intr = {"width": w, "height": h, "fx": fx, "fy": fy, "cx": cx, "cy": cy}
+
+        ratios_np = self._ratio_rpc.root.visible_ratio(w2c.detach().cpu().numpy(), intr)
+        self.curr_vis = torch.tensor(ratios_np, device=self.device, dtype=torch.float32).clamp(0.0, 1.0)
