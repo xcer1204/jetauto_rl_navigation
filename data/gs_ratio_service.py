@@ -7,7 +7,11 @@ import numpy as np
 import torch
 import rpyc
 from rpyc.utils.server import ThreadedServer
-
+import sys
+# Make SAGA code importable
+SAGA_ROOT = "/home/zgao/SegAnyGAussians"
+if SAGA_ROOT not in sys.path:
+    sys.path.append(SAGA_ROOT)
 # ---- SAGA / 3DGS code imports (same as your first script)
 from arguments import ModelParams, PipelineParams
 from gaussian_renderer import render_with_depth
@@ -104,29 +108,30 @@ def transform_gaussians_similarity_inplace(gaussians: GaussianModel, T: np.ndarr
     """
     device = gaussians._xyz.device
 
-    # 1) centers
-    ones = torch.ones((gaussians._xyz.shape[0], 1), device=device)
-    xyz_h = torch.cat([gaussians._xyz, ones], dim=1)  # (N,4)
-    Th = torch.tensor(T, device=device, dtype=torch.float32)
-    xyz_h2 = (Th @ xyz_h.t()).t()
-    gaussians._xyz = xyz_h2[:, :3]
+    with torch.no_grad():
+        # 1) centers
+        ones = torch.ones((gaussians._xyz.shape[0], 1), device=device)
+        xyz_h = torch.cat([gaussians._xyz, ones], dim=1)  # (N,4)
+        Th = torch.tensor(T, device=device, dtype=torch.float32)
+        xyz_h2 = (Th @ xyz_h.t()).t()
+        gaussians._xyz = xyz_h2[:, :3]
 
-    # 2) isotropic scaling is stored log-space
-    gaussians._scaling += float(np.log(scale))
+        # 2) isotropic scaling is stored log-space
+        gaussians._scaling = gaussians._scaling + float(np.log(scale))
 
-    # 3) rotations
-    R_norm = (T[:3, :3] / scale).astype(np.float32)   # pure rotation
-    R_norm_t = torch.tensor(R_norm, device=device, dtype=torch.float32)  # (3,3)
+        # 3) rotations
+        R_norm = (T[:3, :3] / scale).astype(np.float32)   # pure rotation
+        R_norm_t = torch.tensor(R_norm, device=device, dtype=torch.float32)  # (3,3)
 
-    # gaussians.get_rotation_matrix(): (N,3,3)
-    Rg = gaussians.get_rotation_matrix()
-    Rnew = R_norm_t.unsqueeze(0) @ Rg
-    gaussians._rotation = matrix_to_quaternion(Rnew)  # (N,4) wxyz
+        # gaussians.get_rotation: (N,4) wxyz -> (N,3,3)
+        Rg = rotation_matrix_from_quaternion_wxyz(gaussians.get_rotation)
+        Rnew = R_norm_t.unsqueeze(0) @ Rg
+        gaussians._rotation = matrix_to_quaternion(Rnew)  # (N,4) wxyz
 
-    # 4) rotate SH features (not strictly needed for mask-only override, but correct)
-    shs = gaussians._features_rest.detach().cpu().double()
-    shs = transform_shs(shs, R_norm)
-    gaussians._features_rest = shs.float().to(device)
+        # 4) rotate SH features (not strictly needed for mask-only override, but correct)
+        shs = gaussians._features_rest.detach().cpu().double()
+        shs = transform_shs(shs, R_norm)
+        gaussians._features_rest = shs.float().to(device)
 
 
 class SimpleCam:
@@ -188,6 +193,30 @@ class GSVisibilityEngine:
         pipeline = PipelineParams(parser)
         parser.set_defaults(model_path=model_path, source_path=source_path)
         args = parser.parse_args([])
+        # ModelParams with sentinel=True yields None defaults when no CLI/config is used.
+        # Fill the minimal defaults needed by Scene/camera loading.
+        if args.sh_degree is None:
+            args.sh_degree = 3
+        if args.feature_dim is None:
+            args.feature_dim = 32
+        if args.init_from_3dgs_pcd is None:
+            args.init_from_3dgs_pcd = False
+        if args.images is None:
+            args.images = "images"
+        if args.resolution is None:
+            args.resolution = -1
+        if args.white_background is None:
+            args.white_background = False
+        if args.data_device is None:
+            args.data_device = device
+        if args.eval is None:
+            args.eval = False
+        if args.need_features is None:
+            args.need_features = False
+        if args.need_masks is None:
+            args.need_masks = False
+        if args.allow_principle_point_shift is None:
+            args.allow_principle_point_shift = True
 
         dataset = model.extract(args)
         dataset.need_features = False
@@ -313,10 +342,10 @@ class RatioService(rpyc.Service):
 
 def main():
     engine = GSVisibilityEngine(
-        model_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output",
-        source_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/colmap_data_undistorted",
+        model_path="/home/zgao/video_data_process/results_corridor/3dgs_output",
+        source_path="/home/zgao/video_data_process/results_corridor/colmap_data_undistorted",
         iteration=30000,
-        precomputed_mask_path="/home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
+        precomputed_mask_path="/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
         device="cuda",
     )
     server = ThreadedServer(
