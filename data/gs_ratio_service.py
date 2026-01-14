@@ -331,10 +331,10 @@ class RatioService(rpyc.Service):
 
 def main():
     engine = GSVisibilityEngine(
-        model_path="/home/zgao/video_data_process/results_corridor/3dgs_output",
-        source_path="/home/zgao/video_data_process/results_corridor/colmap_data_undistorted",
+        model_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output",
+        source_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/colmap_data_undistorted",
         iteration=30000,
-        precomputed_mask_path="/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
+        precomputed_mask_path="/home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
         device="cuda",
     )
     server = ThreadedServer(

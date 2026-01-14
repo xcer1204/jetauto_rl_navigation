@@ -26,8 +26,7 @@ from pytorch3d.transforms import matrix_to_quaternion
 
 # Same alignment as Isaac env: real/3DGS -> Isaac
 ALIGN_SCALE = 0.3664808278887077
-# ALIGN_ROT_EULER_XYZ_DEG = (5.055594, 3.760772, -3.389579)  # degrees
-ALIGN_ROT_EULER_XYZ_DEG = (-95.055594,  -3.760772, 176.610421)
+ALIGN_ROT_XYZW = (0.04309, 0.03407, -0.02809, 0.99810)  # (x,y,z,w)
 ALIGN_TRANSLATION = (0.089711, 0.740089, 0.192696)      # (tx,ty,tz)
 
 
@@ -45,45 +44,6 @@ def rotation_matrix_from_quaternion_wxyz(quaternion_wxyz: torch.Tensor) -> torch
         dim=1,
     )
     return R
-
-
-def quaternion_wxyz_from_euler_xyz(euler_xyz: torch.Tensor) -> torch.Tensor:
-    """(N,3) xyz (rad), R = Rz(z) @ Ry(y) @ Rx(x) -> (N,4) wxyz."""
-    x = euler_xyz[:, 0]
-    y = euler_xyz[:, 1]
-    z = euler_xyz[:, 2]
-    cr = torch.cos(x * 0.5)
-    sr = torch.sin(x * 0.5)
-    cp = torch.cos(y * 0.5)
-    sp = torch.sin(y * 0.5)
-    cy = torch.cos(z * 0.5)
-    sy = torch.sin(z * 0.5)
-    qw = cr * cp * cy + sr * sp * sy
-    qx = sr * cp * cy - cr * sp * sy
-    qy = cr * sp * cy + sr * cp * sy
-    qz = cr * cp * sy - sr * sp * cy
-    return torch.stack([qw, qx, qy, qz], dim=1)
-
-
-def rotation_matrix_to_euler_xyz(R: np.ndarray) -> np.ndarray:
-    """3x3 rotation -> xyz Euler (rad), R = Rz(z) @ Ry(y) @ Rx(x)."""
-    R = np.asarray(R, dtype=np.float64)
-    assert R.shape == (3, 3)
-
-    r31 = R[2, 0]
-    sy = -r31
-    sy = np.clip(sy, -1.0, 1.0)
-    y = np.arcsin(sy)
-    cy = np.cos(y)
-
-    if abs(cy) < 1e-8:
-        x = 0.0
-        z = np.arctan2(-R[0, 1], R[1, 1])
-    else:
-        x = np.arctan2(R[2, 1] / cy, R[2, 2] / cy)
-        z = np.arctan2(R[1, 0] / cy, R[0, 0] / cy)
-
-    return np.array([x, y, z], dtype=np.float64)
 
 
 def to_so3(R: torch.Tensor) -> torch.Tensor:
@@ -234,15 +194,8 @@ def main():
         "width": 320,
         "height": 320,
     }
-    # pos_w = [-0.38128018379211426, 2.0024003982543945, 1.20709329843521118]
-    # quat_wxyz = [-0.06844878941774368, -0.06373614817857742, 0.6790152788162231, 0.7281900644302368]
-    # pos_w=[0.12885811924934387, -7.961982191773131e-05, 0.20709329843521118]
-    pos_w = [-0.18128018379211426, -0.0709329843521118, -1.0024003982543945, ]
-    # pos_w =[0,0,0]
-    # pos_w =[0.30, 0.76, 0.37]
-
-    quat_wxyz = [1, 0, 0, 0]
-    # quat_wxyz =[0.9993896484375, -5.184998008189723e-05, 0.03492983803153038, -0.00040012900717556477]
+    pos_w = [-0.38128018379211426, 2.0024003982543945, 0.20709329843521118]
+    quat_wxyz = [-0.06844878941774368, -0.06373614817857742, 0.6790152788162231, 0.7281900644302368]
 
     model_path = "/home/zgao/video_data_process/results_corridor/3dgs_output"
     source_path = "/home/zgao/video_data_process/results_corridor/colmap_data_undistorted"
@@ -273,35 +226,12 @@ def main():
 
     s = float(ALIGN_SCALE)
     tx, ty, tz = [float(v) for v in ALIGN_TRANSLATION]
-    rx, ry, rz = [float(v) for v in ALIGN_ROT_EULER_XYZ_DEG]  # degrees
-    euler = torch.tensor([[rx, ry, rz]], dtype=torch.float32) * (math.pi / 180.0)
-    q_wxyz = quaternion_wxyz_from_euler_xyz(euler)
+    qx, qy, qz, qw = [float(v) for v in ALIGN_ROT_XYZW]  # xyzw
+    q_wxyz = torch.tensor([[qw, qx, qy, qz]], dtype=torch.float32)
     R = rotation_matrix_from_quaternion_wxyz(q_wxyz)[0].cpu().numpy()
     T = np.eye(4, dtype=np.float32)
     T[:3, :3] = (R * s).astype(np.float32)
     T[:3, 3] = np.array([tx, ty, tz], dtype=np.float32)
-    # Invert alignment transform and scale.
-    # T = np.linalg.inv(T)
-    # s = 1.0 / s
-    # M = np.array(
-    #     [
-    #         [1.0, 0.0, 0.0, 0.0],
-    #         [0.0, 0.0, 1.0, 0.0],
-    #         [0.0, 1.0, 0.0, 0.0],
-    #         [0.0, 0.0, 0.0, 1.0],
-    #     ],
-    #     dtype=np.float32,
-    # )
-    # T = M @ T
-    R_norm = T[:3, :3] / s
-    t_align = T[:3, 3]
-    euler_rad = rotation_matrix_to_euler_xyz(R_norm)
-    euler_deg = np.degrees(euler_rad)
-    euler_rad_t = torch.from_numpy(euler_rad.astype(np.float32)).unsqueeze(0)
-    q_wxyz_align = quaternion_wxyz_from_euler_xyz(euler_rad_t)[0].cpu().numpy()
-    print("Aligned translation (xyz):", t_align)
-    print("Aligned euler xyz (deg):", euler_deg)
-    print("Aligned quaternion wxyz:", q_wxyz_align)
     transform_gaussians_similarity_inplace(gaussians, T, s)
 
     w2c = w2c_from_pos_quat(pos_w, quat_wxyz, device=device)
