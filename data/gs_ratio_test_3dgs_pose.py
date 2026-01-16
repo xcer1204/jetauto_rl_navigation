@@ -24,13 +24,6 @@ from e3nn import o3
 from pytorch3d.transforms import matrix_to_quaternion
 
 
-# Same alignment as Isaac env: real/3DGS -> Isaac
-ALIGN_SCALE = 0.3664808278887077
-# ALIGN_ROT_EULER_XYZ_DEG = (5.055594, 3.760772, -3.389579)  # degrees
-ALIGN_ROT_EULER_XYZ_DEG = (-95.055594,  -3.760772, 176.610421)
-ALIGN_TRANSLATION = (0.089711, 0.740089, 0.192696)      # (tx,ty,tz)
-
-
 @torch.jit.script
 def rotation_matrix_from_quaternion_wxyz(quaternion_wxyz: torch.Tensor) -> torch.Tensor:
     """(N,4) wxyz -> (N,3,3)"""
@@ -65,25 +58,26 @@ def quaternion_wxyz_from_euler_xyz(euler_xyz: torch.Tensor) -> torch.Tensor:
     return torch.stack([qw, qx, qy, qz], dim=1)
 
 
-def rotation_matrix_to_euler_xyz(R: np.ndarray) -> np.ndarray:
-    """3x3 rotation -> xyz Euler (rad), R = Rz(z) @ Ry(y) @ Rx(x)."""
-    R = np.asarray(R, dtype=np.float64)
-    assert R.shape == (3, 3)
+def rotation_matrix_to_euler_xyz(R: torch.Tensor) -> torch.Tensor:
+    """(N,3,3) rotation -> (N,3) xyz Euler (rad), R = Rz(z) @ Ry(y) @ Rx(x)."""
+    r31 = R[:, 2, 0]
+    sy = (-r31).clamp(-1.0, 1.0)
+    y = torch.asin(sy)
+    cy = torch.cos(y)
+    near_gimbal = torch.abs(cy) < 1e-8
 
-    r31 = R[2, 0]
-    sy = -r31
-    sy = np.clip(sy, -1.0, 1.0)
-    y = np.arcsin(sy)
-    cy = np.cos(y)
+    x = torch.atan2(R[:, 2, 1] / cy, R[:, 2, 2] / cy)
+    z = torch.atan2(R[:, 1, 0] / cy, R[:, 0, 0] / cy)
 
-    if abs(cy) < 1e-8:
-        x = 0.0
-        z = np.arctan2(-R[0, 1], R[1, 1])
-    else:
-        x = np.arctan2(R[2, 1] / cy, R[2, 2] / cy)
-        z = np.arctan2(R[1, 0] / cy, R[0, 0] / cy)
+    x = torch.where(near_gimbal, torch.zeros_like(x), x)
+    z = torch.where(near_gimbal, torch.atan2(-R[:, 0, 1], R[:, 1, 1]), z)
+    return torch.stack([x, y, z], dim=1)
 
-    return np.array([x, y, z], dtype=np.float64)
+
+def euler_xyz_from_quaternion_wxyz(quaternion_wxyz: torch.Tensor) -> torch.Tensor:
+    """(N,4) wxyz -> (N,3) xyz Euler (rad), R = Rz(z) @ Ry(y) @ Rx(x)."""
+    R = rotation_matrix_from_quaternion_wxyz(quaternion_wxyz)
+    return rotation_matrix_to_euler_xyz(R)
 
 
 def to_so3(R: torch.Tensor) -> torch.Tensor:
@@ -190,6 +184,7 @@ def w2c_from_pos_quat(pos_w: Union[list, np.ndarray], quat_wxyz: Union[list, np.
     pos = torch.tensor(pos_w, dtype=torch.float32, device=device)
     quat = torch.tensor(quat_wxyz, dtype=torch.float32, device=device)
     quat = quat / torch.linalg.norm(quat)
+
     R_c2w = rotation_matrix_from_quaternion_wxyz(quat.view(1, 4))[0]
 
     c2w = torch.eye(4, dtype=torch.float32, device=device)
@@ -226,23 +221,57 @@ def _fill_defaults(args, device: str) -> None:
 
 @torch.no_grad()
 def main():
+
+    # in isaaclab actually used intrinsics
     intr = {
-        "fx": 366.4996337890625,
+        "fx": 366.4996337890625,   
         "fy": 366.4996337890625,
         "cx": 160.0,
         "cy": 160.0,
         "width": 320,
         "height": 320,
     }
-    # pos_w = [-0.38128018379211426, 2.0024003982543945, 1.20709329843521118]
-    # quat_wxyz = [-0.06844878941774368, -0.06373614817857742, 0.6790152788162231, 0.7281900644302368]
-    # pos_w=[0.12885811924934387, -7.961982191773131e-05, 0.20709329843521118]
-    pos_w = [-0.18128018379211426, -0.0709329843521118, -1.0024003982543945, ]
-    # pos_w =[0,0,0]
-    # pos_w =[0.30, 0.76, 0.37]
 
-    quat_wxyz = [1, 0, 0, 0]
-    # quat_wxyz =[0.9993896484375, -5.184998008189723e-05, 0.03492983803153038, -0.00040012900717556477]
+    # in Isaac Sim
+    # intr = {
+    #     "fx": 731.78788,   
+    #     "fy": 731.78788,
+    #     "cx": 970.94244,
+    #     "cy": 600.37482,
+    #     "width": 1936,
+    #     "height": 1216,
+    # }
+
+
+    src_pts_new = np.array([[-0.52469, -0.51037, -0.13751],
+                            [-0.55617, -0.54819,  0.29431],
+                            [ 0.26071, -0.47474, -0.08103],
+                            [ 0.244,   -0.49882,  0.36152],
+                            [-0.61107,  0.49264, -0.04952],
+                            [-0.61891,  0.44137,  0.39828],
+                            [ 0.18946,  0.51008,  0.44312],
+                            [ 0.21734,  0.55559,  0.00436]], dtype=np.float64)
+
+
+    # pos_w = src_pts_new[3]
+    # quat_wxyz = [1, 0, 0, 0]
+
+    pos_w = [1.485949,  0.35438,  -3.344182]
+    # quat_wxyz = [0.395616,  0.470497, -0.567977,  0.547286]
+    quat_wxyz = [0.995433,  0.094683,  0.00259,   0.011906]
+    
+    # quat_wxyz =  [0.7703934907913208, 0.0, 0.6375686526298523, 0.0]
+
+    # quat_wxyz_test = [0.7703935503959656, 0.0, 0.0, -0.6375687122344971]
+    # quat_wxyz_test = [0.395616,  0.470497, -0.567977,  0.547286]
+    # euler_test = euler_xyz_from_quaternion_wxyz(torch.tensor(quat_wxyz_test).view(1,4))
+    # print("test euler (deg) =", euler_test.cpu().numpy() * 180.0 / math.pi)
+
+    # euler_test_angles = [  0. ,79.22152, 0]  # in degrees
+    # euler_test_rad = torch.tensor(euler_test_angles, dtype=torch.float32).view(1, 3) * (math.pi / 180.0)
+    # quat_wxyz_test = quaternion_wxyz_from_euler_xyz(euler_test_rad)[0].cpu().numpy().tolist()
+    # print("Using quat_wxyz_test =", quat_wxyz_test) 
+
 
     model_path = "/home/zgao/video_data_process/results_corridor/3dgs_output"
     source_path = "/home/zgao/video_data_process/results_corridor/colmap_data_undistorted"
@@ -270,39 +299,6 @@ def main():
     is_target = torch.load(precomputed_mask_path, map_location=device)
     is_target = is_target.bool().to(device)
     mask_color = is_target.float().unsqueeze(1).repeat(1, 3)
-
-    s = float(ALIGN_SCALE)
-    tx, ty, tz = [float(v) for v in ALIGN_TRANSLATION]
-    rx, ry, rz = [float(v) for v in ALIGN_ROT_EULER_XYZ_DEG]  # degrees
-    euler = torch.tensor([[rx, ry, rz]], dtype=torch.float32) * (math.pi / 180.0)
-    q_wxyz = quaternion_wxyz_from_euler_xyz(euler)
-    R = rotation_matrix_from_quaternion_wxyz(q_wxyz)[0].cpu().numpy()
-    T = np.eye(4, dtype=np.float32)
-    T[:3, :3] = (R * s).astype(np.float32)
-    T[:3, 3] = np.array([tx, ty, tz], dtype=np.float32)
-    # Invert alignment transform and scale.
-    # T = np.linalg.inv(T)
-    # s = 1.0 / s
-    # M = np.array(
-    #     [
-    #         [1.0, 0.0, 0.0, 0.0],
-    #         [0.0, 0.0, 1.0, 0.0],
-    #         [0.0, 1.0, 0.0, 0.0],
-    #         [0.0, 0.0, 0.0, 1.0],
-    #     ],
-    #     dtype=np.float32,
-    # )
-    # T = M @ T
-    R_norm = T[:3, :3] / s
-    t_align = T[:3, 3]
-    euler_rad = rotation_matrix_to_euler_xyz(R_norm)
-    euler_deg = np.degrees(euler_rad)
-    euler_rad_t = torch.from_numpy(euler_rad.astype(np.float32)).unsqueeze(0)
-    q_wxyz_align = quaternion_wxyz_from_euler_xyz(euler_rad_t)[0].cpu().numpy()
-    print("Aligned translation (xyz):", t_align)
-    print("Aligned euler xyz (deg):", euler_deg)
-    print("Aligned quaternion wxyz:", q_wxyz_align)
-    transform_gaussians_similarity_inplace(gaussians, T, s)
 
     w2c = w2c_from_pos_quat(pos_w, quat_wxyz, device=device)
     cam = SimpleCam(

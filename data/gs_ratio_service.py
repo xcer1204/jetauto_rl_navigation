@@ -32,6 +32,14 @@ ALIGN_SCALE = 0.3664808278887077
 ALIGN_ROT_XYZW = (0.04309, 0.03407, -0.02809, 0.99810)  # (x,y,z,w)
 ALIGN_TRANSLATION = (0.089711, 0.740089, 0.192696)      # (tx,ty,tz)
 
+# Fixed camera intrinsics; edit if needed.
+FIXED_FX = 366.4996337890625
+FIXED_FY = 366.4996337890625
+FIXED_CX = 160.0
+FIXED_CY = 160.0
+FIXED_WIDTH = 320
+FIXED_HEIGHT = 320
+
 
 # =========================
 # 2) Helpers
@@ -166,17 +174,6 @@ class SimpleCam:
         self.camera_center = torch.inverse(wv)[3, :3]
 
 
-def _broadcast_intr(x: Union[float, int, list, np.ndarray], N: int) -> np.ndarray:
-    if isinstance(x, (float, int)):
-        return np.full((N,), float(x), dtype=np.float32)
-    arr = np.asarray(x, dtype=np.float32).reshape(-1)
-    if arr.size == 1:
-        return np.full((N,), float(arr.item()), dtype=np.float32)
-    if arr.size != N:
-        raise ValueError(f"Intrinsic array length mismatch: got {arr.size}, expected {N}")
-    return arr
-
-
 # =========================
 # 3) Engine: load once + ALIGN once + per-call ratio
 # =========================
@@ -261,10 +258,9 @@ class GSVisibilityEngine:
         transform_gaussians_similarity_inplace(self.gaussians, T, s)
 
     @torch.no_grad()
-    def visible_ratio(self, w2c_list: Any, intr: Dict[str, Any], znear: float = 0.01, zfar: float = 100.0, thr: float = 0.5) -> np.ndarray:
+    def visible_ratio(self, w2c_list: Any, znear: float = 0.01, zfar: float = 100.0, thr: float = 0.5) -> np.ndarray:
         """
         w2c_list: list/np array of shape (N,4,4) in ISAAC world coordinates (I)
-        intr: dict keys width,height,fx,fy,cx,cy (each can be scalar or length-N array)
         return: np.ndarray (N,) ratios
         """
         with self._lock:
@@ -273,20 +269,13 @@ class GSVisibilityEngine:
                 w2c = w2c.unsqueeze(0)
             N = w2c.shape[0]
 
-            width  = _broadcast_intr(intr["width"],  N)
-            height = _broadcast_intr(intr["height"], N)
-            fx     = _broadcast_intr(intr["fx"],     N)
-            fy     = _broadcast_intr(intr["fy"],     N)
-            cx     = _broadcast_intr(intr["cx"],     N)
-            cy     = _broadcast_intr(intr["cy"],     N)
-
             ratios = np.zeros((N,), dtype=np.float32)
 
             for i in range(N):
                 cam = SimpleCam(
-                    int(width[i]), int(height[i]),
-                    float(fx[i]), float(fy[i]),
-                    float(cx[i]), float(cy[i]),
+                    FIXED_WIDTH, FIXED_HEIGHT,
+                    FIXED_FX, FIXED_FY,
+                    FIXED_CX, FIXED_CY,
                     w2c[i],
                     znear=znear, zfar=zfar, device=self.device,
                 )
@@ -325,9 +314,9 @@ class RatioService(rpyc.Service):
         self.engine = engine
         self._n_calls = 0
 
-    def exposed_visible_ratio(self, w2c_list, intr):
+    def exposed_visible_ratio(self, w2c_list):
         self._n_calls += 1
-        ratios = self.engine.visible_ratio(w2c_list, intr)
+        ratios = self.engine.visible_ratio(w2c_list)
 
         # 每次调用都打印一行（确认通信）
         n = len(ratios) if hasattr(ratios, "__len__") else 1
