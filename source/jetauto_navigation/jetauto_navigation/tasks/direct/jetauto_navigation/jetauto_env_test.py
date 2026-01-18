@@ -1,0 +1,463 @@
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import torch
+from PIL import Image
+
+import isaaclab.sim as sim_utils
+from isaaclab.assets import Articulation
+from isaaclab.envs import DirectRLEnv
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+import isaaclab.utils.math as math_utils
+from isaaclab.sensors import Camera, CameraCfg
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers.manager_term_cfg import ObservationTermCfg
+import isaacsim.core.utils.prims as prim_utils
+
+from .custom_observations import ImageFeaturesNoHead
+from .jetauto_single_room_env_cfg import JetautoSingleRoomEnvCfg
+
+
+class JetautoSingleRoomEmptyEnv(DirectRLEnv):
+    """Single-room environment with background only; walls/obstacle/target not spawned but logic preserved."""
+
+    cfg: JetautoSingleRoomEnvCfg
+
+    # alignment constants (real -> sim)
+    ALIGN_SCALE = 0.3664808278887077
+    ALIGN_ROT_XYZW = (0.04309, 0.03407, -0.02809, 0.99810)
+    ALIGN_TRANSLATION = (0.089711, 0.740089, 0.192696)
+    CAMERA_BASE_POS = (0.12885811924934387, -7.961982191773131e-05, 0.20709329843521118)
+    # CAMERA_BASE_QUAT_WXYZ = (-0.5169855943050016, -0.48200393793554497, 0.4824559007372416, 0.5173339375486095)
+    # CAMERA_BASE_QUAT_WXYZ = (1.0, 0.0, 0.0, 0.0) 
+    CAMERA_BASE_QUAT_WXYZ = [0.9993908405303955, 0.03489949554204941, 0.0, 0.0]  # 4度俯仰角
+
+
+    def __init__(self, cfg: JetautoSingleRoomEnvCfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+
+        self._hist_len = 4
+        self._feat_hist = torch.zeros(self.num_envs, self._hist_len, 512, device=self.device)
+
+        self.v_xy_max = self.cfg.env_params.motion.v_xy_max
+        self.w_z_max = self.cfg.env_params.motion.w_z_max
+        self.v_smooth = self.cfg.env_params.motion.v_smooth
+        self._v_cmd_body = torch.zeros((self.num_envs, 3), device=self.device)
+        self._w_cmd = torch.zeros((self.num_envs,), device=self.device)
+
+        self.dof_idx, _ = self.robot_a.find_joints(self.cfg.dof_names)
+        self._camera_fixed_pos = torch.tensor(self.CAMERA_BASE_POS, device=self.device, dtype=torch.float32)
+        self._camera_fixed_quat = torch.tensor(self.CAMERA_BASE_QUAT_WXYZ, device=self.device, dtype=torch.float32)
+
+        self.prev_vis = torch.zeros(self.num_envs, device=self.device)
+        self.curr_vis = torch.zeros(self.num_envs, device=self.device)       # 可见率（RPC已禁用）
+        self.curr_vis_sem = torch.zeros(self.num_envs, device=self.device)  # 仅用于语义分割debug
+
+        self.collision_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        obs_term_cfg = ObservationTermCfg(
+            func=ImageFeaturesNoHead,
+            params={
+                "sensor_cfg": SceneEntityCfg("camera_a"),
+                "data_type": "rgb",
+                "model_name": "resnet18",
+            },
+        )
+        self.resnet_extractor = ImageFeaturesNoHead(obs_term_cfg, env=self)
+
+        self._episode_image_dir = Path("episode_start_images")
+        self._episode_image_dir.mkdir(parents=True, exist_ok=True)
+        self._episode_image_saved = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._episode_image_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+        # Real->sim alignment (measured from box alignment results)
+        self._align_scale = self.ALIGN_SCALE
+        self._align_rot_xyzw = torch.tensor(self.ALIGN_ROT_XYZW, device=self.device)
+        self._align_translation = torch.tensor(self.ALIGN_TRANSLATION, device=self.device)
+
+        # Compute sim-space bounds for the real rectangle [(1.2,-0.6), (-0.6,-0.6), (1.2,1.8), (-0.6,1.8), z=0]
+        real_rect = torch.tensor(
+            [
+                [1.2, 0.9, 0.0],
+                [-0.6, 0.9, 0.0],
+                [1.2, 1.8, 0.0],
+                [-0.6, 1.8, 0.0],
+            ],
+            device=self.device,
+        )
+        sim_rect = self._real_to_sim(real_rect)
+        self._sim_bounds_min = sim_rect.min(dim=0).values[:2]
+        self._sim_bounds_max = sim_rect.max(dim=0).values[:2]
+
+        # placeholders for logical target/obstacle positions (not spawned)
+        self._target_pos_current = torch.zeros(self.num_envs, 3, device=self.device)
+        self._obstacle_pos_current = torch.zeros(self.num_envs, 3, device=self.device)
+
+
+    def _real_to_sim(self, pts_real: torch.Tensor) -> torch.Tensor:
+        """Apply the measured real->sim similarity transform to points."""
+        quat_xyzw = self._align_rot_xyzw
+        quat_wxyz = torch.stack((quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2])).to(
+            device=pts_real.device
+        )
+        quat_wxyz = quat_wxyz.expand(pts_real.shape[0], -1)
+        rotated = math_utils.quat_apply(quat_wxyz, pts_real)
+        return rotated * self._align_scale + self._align_translation
+
+    def _setup_scene(self):
+        """Build a single room with background only (no physical walls/targets/obstacles)."""
+
+        self.robot_a = Articulation(self.cfg.robot_cfg.replace(prim_path="/World/envs/env_.*/Robot"))
+        self.scene.articulations["robot_a"] = self.robot_a
+
+        c = self.cfg.env_params.camera
+
+        # Real->sim alignment (measured from box alignment results)
+        self._align_scale = self.ALIGN_SCALE
+        self._align_rot_xyzw = torch.tensor(self.ALIGN_ROT_XYZW, device=self.device)
+        self._align_translation = torch.tensor(self.ALIGN_TRANSLATION, device=self.device)
+
+        # Background 3DGS
+        bg_scale = self._align_scale
+        bg_scale = self.ALIGN_SCALE
+        # bg_scale = 0.23994040084788124
+        bg_pos = tuple(self._align_translation.tolist())
+        bg_pos = self.ALIGN_TRANSLATION
+        # bg_pos = (-0.206631, 0.343036, 0.754697)
+        bg_rot = tuple(self._align_rot_xyzw.tolist())
+        bg_rot = self.ALIGN_ROT_XYZW
+        # bg_rot = (-0.05688028042359017, -0.00610525184353289, -0.0018002532294618672, 0.9983607157171052)
+
+
+        bg_usd_cfg = sim_utils.UsdFileCfg(
+            # usd_path="/home/zgao/Downloads/corridor.usdz",
+            # usd_path="/home/zgao/MasterThesis/jetauto_navigation/data/point_cloud.usdz",
+            usd_path="/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.usdz",
+            scale=(bg_scale, bg_scale, bg_scale),
+        )
+        sim_utils.spawn_from_usd(
+            prim_path="/World/envs/env_0/Background",
+            cfg=bg_usd_cfg,
+            translation=bg_pos,
+            orientation=(bg_rot[3], bg_rot[0], bg_rot[1], bg_rot[2]),
+        )
+
+        cam_cfg = CameraCfg(
+            prim_path="/World/envs/env_.*/Robot/base_footprint/visuals/depth_camera_link/Camera",
+            update_period=0.0167,
+            height=c.height,
+            width=c.width,
+            data_types=["rgb", "semantic_segmentation"],
+            colorize_semantic_segmentation=False,
+            spawn=sim_utils.PinholeCameraCfg(),
+            offset=CameraCfg.OffsetCfg(
+                pos=(0.0, -0.1, 0.0),
+                # rot=(0.0, 0.0, 0.60876, 0.79335),
+                rot=(0.0, 0.0, 0.6820, 0.7314),
+
+                convention="parent",
+            ),
+        )
+        self._camera_a = Camera(cam_cfg)
+        self.scene.sensors["camera_a"] = self._camera_a
+
+        ground_cfg = GroundPlaneCfg(color=None)
+        spawn_ground_plane(prim_path="/World/ground", cfg=ground_cfg)
+        # Hide the visual mesh to avoid affecting rendering while keeping the collision plane.
+        if prim_utils.is_prim_path_valid("/World/ground/Environment"):
+            prim_utils.set_prim_property("/World/ground/Environment", "visibility", "invisible")
+        self.scene.clone_environments(copy_from_source=False)
+        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg.func("/World/Light", light_cfg)
+
+    def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        self.actions = actions.clone().clamp(-1.0, 1.0)
+
+    def _lock_planar(self, robot, z_lock: float = 0.01) -> None:
+        if z_lock is None:
+            z_lock = self.cfg.env_params.motion.planar_z_lock
+        pos = robot.data.root_pos_w.clone()
+        pos[:, 2] = z_lock
+        R = math_utils.matrix_from_quat(robot.data.root_quat_w)
+        yaw = torch.atan2(R[:, 1, 0], R[:, 0, 0])
+        zeros = torch.zeros_like(yaw)
+        quat_yaw = math_utils.quat_from_euler_xyz(zeros, zeros, yaw)
+        robot.write_root_pose_to_sim(torch.cat([pos, quat_yaw], dim=-1))
+
+    def _apply_action(self) -> None:
+        a = self.actions.clamp(-1.0, 1.0)
+        vx = a[:, 0] * self.v_xy_max
+        vy = a[:, 1] * self.v_xy_max
+        wz = a[:, 2] * self.w_z_max
+
+        alpha = self.v_smooth
+        v_new = torch.stack([vx, vy, torch.zeros_like(vx)], dim=-1)
+        self._v_cmd_body = (1 - alpha) * self._v_cmd_body + alpha * v_new
+        self._w_cmd = (1 - alpha) * self._w_cmd + alpha * wz
+
+        v_world = math_utils.quat_apply(self.robot_a.data.root_quat_w, self._v_cmd_body)
+        vel6 = torch.cat(
+            [
+                v_world[:, :2],
+                torch.zeros_like(v_world[:, :1]),
+                torch.zeros_like(self._w_cmd[:, None]),
+                torch.zeros_like(self._w_cmd[:, None]),
+                self._w_cmd[:, None],
+            ],
+            dim=-1,
+        )
+        self.robot_a.write_root_velocity_to_sim(vel6)
+        self._lock_planar(self.robot_a, 0.01)
+
+    def _get_observations(self) -> dict:
+        with torch.no_grad():
+            resnet_features = self.resnet_extractor(
+                env=self,
+                sensor_cfg=SceneEntityCfg("camera_a"),
+                data_type="rgb",
+                model_name="resnet18",
+            )
+
+        self._save_episode_start_images()
+
+        seg = self._camera_a.data.output["semantic_segmentation"][..., 0]
+
+        target_ids = []
+        has_target = []
+        for info in self._camera_a.data.info:
+            mapping = info["semantic_segmentation"]["idToLabels"]
+            found = None
+            for k, v in mapping.items():
+                label = v.get("class", v) if isinstance(v, dict) else v
+                if str(label).lower() == "target":
+                    found = int(k)
+                    break
+            if found is None:
+                target_ids.append(-1)
+                has_target.append(False)
+            else:
+                target_ids.append(found)
+                has_target.append(True)
+
+        target_ids_tensor = torch.as_tensor(target_ids, device=seg.device, dtype=seg.dtype).view(-1, 1, 1)
+        has_target_tensor = torch.as_tensor(has_target, device=seg.device, dtype=torch.bool).view(-1, 1, 1)
+
+        mask = (seg == target_ids_tensor) & has_target_tensor
+        visible_pixels = mask.sum(dim=(1, 2)).to(torch.float32)
+
+        h, w = seg.shape[-2:]
+        visible_ratio = torch.zeros_like(visible_pixels)
+        valid_envs = has_target_tensor.view(-1)
+        visible_ratio[valid_envs] = visible_pixels[valid_envs] / float(h * w + 1e-6)
+        # self.curr_vis = visible_ratio
+        self.curr_vis_sem = visible_ratio
+
+
+        self._feat_hist = torch.roll(self._feat_hist, shifts=-1, dims=1)
+        self._feat_hist[:, -1, :] = resnet_features
+        obs_2048 = self._feat_hist.reshape(self.num_envs, -1)
+
+        robot_xy = self.robot_a.data.root_pos_w[:, :2]
+        robot_x = robot_xy[:, 0]
+        robot_y = robot_xy[:, 1]
+
+        margin = self.cfg.env_params.walls.wall_margin
+        min_x, min_y = self._sim_bounds_min
+        max_x, max_y = self._sim_bounds_max
+        inside_x = (robot_x >= min_x + margin) & (robot_x <= max_x - margin)
+        inside_y = (robot_y >= min_y + margin) & (robot_y <= max_y - margin)
+        wall_collision = ~(inside_x & inside_y)
+
+        obs_xy = self._obstacle_pos_current[:, :2].unsqueeze(1)
+        dist_to_obs = torch.norm(robot_xy.unsqueeze(1) - obs_xy, dim=-1)
+        obs_collision = (dist_to_obs < (self.cfg.env_params.obstacle.r + self.cfg.env_params.robot_r)).any(dim=1)
+
+        target_xy = self._target_pos_current[:, :2]
+        dist_to_target = torch.norm(robot_xy - target_xy, dim=-1)
+        target_collision = dist_to_target < (self.cfg.env_params.target.r + self.cfg.env_params.robot_r)
+
+        self.collision_mask = wall_collision | obs_collision | target_collision
+
+        return {
+            "policy": obs_2048,
+            "critic": obs_2048,
+        }
+
+    def _save_episode_start_images(self) -> None:
+        rgb = self._camera_a.data.output.get("rgb")
+        if rgb is None:
+            return
+        save_mask = (self.episode_length_buf == 0) & (~self._episode_image_saved)
+        if not save_mask.any():
+            return
+
+        env_ids = save_mask.nonzero(as_tuple=False).squeeze(-1)
+        rgb_np = rgb[env_ids].detach().cpu().numpy()
+        env_ids_cpu = env_ids.detach().cpu().tolist()
+        for i, env_id in enumerate(env_ids_cpu):
+            img = rgb_np[i]
+            if img.shape[-1] == 4:
+                img = img[..., :3]
+            if img.dtype != "uint8":
+                img = (img.clip(0.0, 1.0) * 255.0).astype("uint8")
+            path = self._episode_image_dir / f"env{env_id}_ep{int(self._episode_image_count[env_id].item()):05d}.png"
+            Image.fromarray(img).save(path)
+
+        self._episode_image_saved[env_ids] = True
+
+    def _get_rewards(self) -> torch.Tensor:
+        """Reward disabled while gs_ratio_service is detached."""
+        reward = torch.zeros(self.num_envs, device=self.device)
+        self.extras["vis_ratio"] = 0.0
+        self.extras["occ_ratio"] = 0.0
+        self.extras["delta_O"] = 0.0
+        self.extras["P_t"] = 0.0
+        self.extras["success"] = False
+        return reward
+
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        curr_vis = self.curr_vis.clamp(0.0, 1.0)
+        success = curr_vis >= 0.99
+
+        # failed = self.collision_mask
+        failed = torch.zeros_like(self.collision_mask)
+        terminated = success | failed
+
+        truncated = self.episode_length_buf >= self.max_episode_length - 1
+
+        if success.any().item():
+            print("Episode success!")
+        if failed.any().item():
+            print("Episode failed due to collision!")
+
+        self.extras["success"] = bool(success.any().item())
+        self.extras["collision"] = bool(self.collision_mask.any().item())
+
+        return terminated, truncated
+
+    def _reset_idx(self, env_ids):
+        super()._reset_idx(env_ids)
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+
+        if not hasattr(self, "_static_target_pos"):
+            target_h = self.cfg.env_params.target.size[2] * 0.5
+            obstacle_h = self.cfg.env_params.obstacle.size[2] * 0.5
+            self._static_target_pos = torch.tensor([0.0, 0.0, target_h], device=self.device).repeat(self.num_envs, 1)
+            self._static_obstacle_pos = torch.tensor([0.1, -0.385, obstacle_h], device=self.device).repeat(
+                self.num_envs, 1)
+            self.cfg.env_params.obstacle.r = float(
+                0.5 * math.sqrt(self.cfg.env_params.obstacle.size[0] ** 2 + self.cfg.env_params.obstacle.size[1] ** 2))
+            self.cfg.env_params.target.r = 0.1
+            self.cfg.env_params.robot_r = 0.2
+
+        target_pos = self._static_target_pos[env_ids].clone()
+        target_pos[:, :2] += torch.randn(len(env_ids), 2, device=self.device) * self.cfg.env_params.reset.target_noise
+
+        obstacle_pos = self._static_obstacle_pos[env_ids].clone()
+        obstacle_pos[:, :2] += torch.randn(len(env_ids), 2,
+                                           device=self.device) * self.cfg.env_params.reset.obstacle_noise
+
+        def sample_in_rect(num_envs, x1, x2, y1, y2, device=None, dtype=torch.float32):
+            rx = torch.rand(num_envs, device=device, dtype=dtype) * (x2 - x1) + x1
+            ry = torch.rand(num_envs, device=device, dtype=dtype) * (y2 - y1) + y1
+            return torch.stack((rx, ry), dim=-1)
+
+        # robot_xy = sample_in_rect(
+        #     num_envs=len(env_ids),
+        #     x1=-0.1,
+        #     x2=0.25,
+        #     y1=-0.8,
+        #     y2=-0.6,
+        #     device=self.device,
+        # )
+
+        # print("robot_xy:", robot_xy)
+
+        center_xy = 0.5 * (self._sim_bounds_min + self._sim_bounds_max)
+        # robot_xy = center_xy.unsqueeze(0).expand(len(env_ids), -1)
+
+        # robot_xy =torch.tensor([[-0.4053, 2.1290]], device=self.device) #goal
+        # robot_xy =torch.tensor([[0.2053, 2.1290]], device=self.device) #goal
+        # robot_xy =torch.tensor([[1.2053, -0.6290]], device=self.device)
+
+        robot_xy =torch.tensor([[0.2053, -1.3290]], device=self.device)
+
+
+
+        robot_pos = torch.cat([robot_xy, torch.zeros(len(env_ids), 1, device=self.device)], dim=-1)
+
+        root_states_a = self.robot_a.data.default_root_state[env_ids].clone()
+        root_states_a[:, :3] = self.scene.env_origins[env_ids] + robot_pos
+
+        # yaw = (torch.rand(len(env_ids), device=self.device) - 0.5) * 2 * math.pi
+
+        x = robot_xy[:, 0]
+        y = robot_xy[:, 1]
+
+        yaw = torch.atan2(-y, -x)  # 指向原点的朝向（z-up，只算yaw）
+        # 然后四元数（w,x,y,z）
+        half = 0.5 * yaw
+        quat = torch.stack([torch.cos(half),
+                            torch.zeros_like(half),
+                            torch.zeros_like(half),
+                            torch.sin(half)], dim=-1)
+
+        # quat = math_utils.quat_from_angle_axis(yaw, torch.tensor([0.0, 0.0, 1.0], device=self.device))
+
+        root_states_a[:, 3:7] = quat
+
+        self.robot_a.write_root_pose_to_sim(root_states_a[:, :7], env_ids)
+        self.robot_a.write_root_velocity_to_sim(root_states_a[:, 7:], env_ids)
+
+        joint_pos_a = self.robot_a.data.default_joint_pos[env_ids].clone()
+        joint_vel_a = torch.zeros_like(joint_pos_a)
+        self.robot_a.set_joint_position_target(joint_pos_a, env_ids=env_ids)
+        self.robot_a.write_joint_state_to_sim(joint_pos_a, joint_vel_a, env_ids=env_ids)
+
+        # store logical positions for collision checks
+        self._target_pos_current[env_ids] = target_pos
+        self._obstacle_pos_current[env_ids] = obstacle_pos
+
+        self.collision_mask[env_ids] = False
+        self.curr_vis[env_ids] = 0.0
+        self.prev_vis[env_ids] = 0.0
+        self.curr_vis_sem[env_ids] = 0.0
+        self._episode_image_saved[env_ids] = False
+        self._episode_image_count[env_ids] += 1
+        # Print camera pose using robot root pose + fixed camera transform.
+        env0_mask = (env_ids == 0)
+        if env0_mask.any():
+            idx0 = int(env0_mask.nonzero(as_tuple=False)[0].item())
+            root_pos_w = root_states_a[idx0, :3]
+            root_quat_w = root_states_a[idx0, 3:7]
+            cam_pos_w = root_pos_w + math_utils.quat_apply(root_quat_w, self._camera_fixed_pos)
+            cam_quat_w = math_utils.quat_mul(root_quat_w, self._camera_fixed_quat)
+            env_origin = self.scene.env_origins[0]
+            cam_pos_env = (cam_pos_w - env_origin).detach().cpu().tolist()
+            cam_quat_wxyz = cam_quat_w.detach().cpu().tolist()
+            fixed_pos = self._camera_fixed_pos.detach().cpu().tolist()
+            fixed_quat_wxyz = self._camera_fixed_quat.detach().cpu().tolist()
+            width = int(self._camera_a.cfg.width)
+            height = int(self._camera_a.cfg.height)
+            focal = float(self._camera_a.cfg.spawn.focal_length)
+            horiz_ap = float(self._camera_a.cfg.spawn.horizontal_aperture)
+            fx = (width * focal) / horiz_ap
+            fy = fx
+            intr = {
+                "fx": fx,
+                "fy": fy,
+                "cx": width * 0.5,
+                "cy": height * 0.5,
+                "width": width,
+                "height": height,
+            }
+            print(
+                f"[episode camera fixed] intr={intr} fixed_pos={fixed_pos} "
+                f"fixed_quat_wxyz={fixed_quat_wxyz} poc_isaac={cam_pos_env} "
+                f"qoc_isaac_wxyz={cam_quat_wxyz}",
+                flush=True,
+            )
