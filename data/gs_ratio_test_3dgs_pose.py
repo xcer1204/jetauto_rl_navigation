@@ -2,7 +2,7 @@
 import argparse
 import math
 import os
-from typing import Union
+from typing import Tuple, Union
 
 import numpy as np
 import torch
@@ -21,7 +21,36 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 import einops
 from einops import einsum
 from e3nn import o3
-from pytorch3d.transforms import matrix_to_quaternion
+
+
+
+
+
+
+
+# ===== 从isaac lab到3dgs .ply的固定变换 =====
+SCALE = 0.3664808278887077
+# 由于转换后的usd在isaac sim里和3dgs的坐标轴方向不一样，旋转矩阵里的所有元素变负，并且交换yz轴(第23列互换)
+R = np.array(
+    [
+        [-0.996101, -0.060011, -0.064665],
+        [ 0.058997,  0.091831, -0.994025],
+        [ 0.065591, -0.993965, -0.087933]
+    ],
+    dtype=np.float64,
+)
+T = np.array([0.089711, 0.740089, 0.192696], dtype=np.float64)
+
+# 摄像机对于机器人的3d位移(假定默认朝向与机器人一致, x向前),需要转成z向前。
+# 这里需要一个旋转矩阵，相当于绕自己的坐标轴旋转
+EXTRA_ROT = np.array(
+    [
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+    ],
+    dtype=np.float64,
+)
 
 
 @torch.jit.script
@@ -29,6 +58,7 @@ def rotation_matrix_from_quaternion_wxyz(quaternion_wxyz: torch.Tensor) -> torch
     """(N,4) wxyz -> (N,3,3)"""
     q = quaternion_wxyz
     q0, q1, q2, q3 = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+
     R = torch.stack(
         [
             torch.stack([1 - 2 * q2 * q2 - 2 * q3 * q3, 2 * q1 * q2 - 2 * q3 * q0, 2 * q1 * q3 + 2 * q2 * q0], dim=1),
@@ -88,6 +118,43 @@ def to_so3(R: torch.Tensor) -> torch.Tensor:
         U[..., -1] *= -1
         R_orth = U @ Vt
     return R_orth
+
+
+def rotation_matrix_to_quaternion_wxyz(Rm: torch.Tensor) -> torch.Tensor:
+    """(3,3) rotation -> (4,) wxyz. Matches the old numpy implementation."""
+    m = Rm
+    trace = m[0, 0] + m[1, 1] + m[2, 2]
+    trace_val = float(trace.item())
+    if trace_val > 0.0:
+        s = torch.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (m[2, 1] - m[1, 2]) / s
+        qy = (m[0, 2] - m[2, 0]) / s
+        qz = (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0].item() > m[1, 1].item() and m[0, 0].item() > m[2, 2].item():
+        s = torch.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+        qw = (m[2, 1] - m[1, 2]) / s
+        qx = 0.25 * s
+        qy = (m[0, 1] + m[1, 0]) / s
+        qz = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1].item() > m[2, 2].item():
+        s = torch.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+        qw = (m[0, 2] - m[2, 0]) / s
+        qx = (m[0, 1] + m[1, 0]) / s
+        qy = 0.25 * s
+        qz = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = torch.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+        qw = (m[1, 0] - m[0, 1]) / s
+        qx = (m[0, 2] + m[2, 0]) / s
+        qy = (m[1, 2] + m[2, 1]) / s
+        qz = 0.25 * s
+
+    q = torch.stack([qw, qx, qy, qz], dim=0)
+    q = q / torch.linalg.norm(q)
+    if q[0].item() < 0.0:
+        q = -q
+    return q
 
 
 def transform_shs(shs_feat: torch.Tensor, rotation_matrix_np: np.ndarray) -> torch.Tensor:
@@ -179,17 +246,18 @@ class SimpleCam:
         self.camera_center = torch.inverse(wv)[3, :3]
 
 
-def w2c_from_pos_quat(pos_w: Union[list, np.ndarray], quat_wxyz: Union[list, np.ndarray], device: str) -> torch.Tensor:
-    """Build w2c from camera pose in world (pos + quat wxyz)."""
-    pos = torch.tensor(pos_w, dtype=torch.float32, device=device)
-    quat = torch.tensor(quat_wxyz, dtype=torch.float32, device=device)
-    quat = quat / torch.linalg.norm(quat)
-
-    R_c2w = rotation_matrix_from_quaternion_wxyz(quat.view(1, 4))[0]
+def w2c_from_pos_rot(pos_w: Union[list, np.ndarray, torch.Tensor],
+                     rot_c2w: Union[list, np.ndarray, torch.Tensor],
+                     device: str) -> torch.Tensor:
+    """Build w2c from camera pose in world (pos + rotation matrix)."""
+    pos = torch.as_tensor(pos_w, dtype=torch.float32, device=device)
+    rot = torch.as_tensor(rot_c2w, dtype=torch.float32, device=device)
 
     c2w = torch.eye(4, dtype=torch.float32, device=device)
-    c2w[:3, :3] = R_c2w
+    c2w[:3, :3] = rot
     c2w[:3, 3] = pos
+
+    # w2c = c2w
     w2c = torch.inverse(c2w)
     return w2c
 
@@ -219,9 +287,37 @@ def _fill_defaults(args, device: str) -> None:
         args.allow_principle_point_shift = True
 
 
+def isaac_pose_to_world_pos_rot(pos_isaac: Union[list, np.ndarray, torch.Tensor],
+                                quat_isaac_wxyz: Union[list, np.ndarray, torch.Tensor],
+                                device: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert Isaac pose to 3DGS world pos + c2w rotation matrix."""
+    pos = torch.as_tensor(pos_isaac, dtype=torch.float32, device=device)
+    quat = torch.as_tensor(quat_isaac_wxyz, dtype=torch.float32, device=device)
+    quat = quat / torch.linalg.norm(quat)
+
+    R_isaac = rotation_matrix_from_quaternion_wxyz(quat.view(1, 4))[0]
+    R_t = torch.as_tensor(R, dtype=torch.float32, device=device)
+    T_t = torch.as_tensor(T, dtype=torch.float32, device=device)
+    extra_rot_t = torch.as_tensor(EXTRA_ROT, dtype=torch.float32, device=device)
+
+    pos_w = (R_t.T @ (pos - T_t)) / float(SCALE)
+    R_w = R_t.T @ R_isaac @ extra_rot_t
+
+    # quat_w = rotation_matrix_to_quaternion_wxyz(R_w)
+    # R_w = rotation_matrix_from_quaternion_wxyz(quat_w.view(1, 4))[0]
+    # print("R_c2w:\n", R_w.cpu().numpy())
+    return pos_w, R_w
+
+
 @torch.no_grad()
 def main():
 
+    model_path = "/home/zgao/video_data_process/results_corridor/3dgs_output"
+    source_path = "/home/zgao/video_data_process/results_corridor/colmap_data_undistorted"
+    iteration = 30000
+    ply_path = "/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.ply"
+    precomputed_mask_path = "/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt"
+    device = "cuda"
     # in isaaclab actually used intrinsics
     intr = {
         "fx": 366.4996337890625,   
@@ -242,43 +338,43 @@ def main():
     #     "height": 1216,
     # }
 
+    dst_pts = np.array([[0.30, 0.76, 0.37],
+                        [0.30, 0.60, 0.37],
+                        [0.0, 0.76, 0.37],
+                        [0.0, 0.60, 0.37],
+                        [0.30, 0.76, 0.0],
+                        [0.30, 0.60, 0.0],
+                        [0.0, 0.60, 0.0],
+                        [0.0, 0.76, 0.0]], dtype=np.float64)
 
-    src_pts_new = np.array([[-0.52469, -0.51037, -0.13751],
-                            [-0.55617, -0.54819,  0.29431],
-                            [ 0.26071, -0.47474, -0.08103],
-                            [ 0.244,   -0.49882,  0.36152],
-                            [-0.61107,  0.49264, -0.04952],
-                            [-0.61891,  0.44137,  0.39828],
-                            [ 0.18946,  0.51008,  0.44312],
-                            [ 0.21734,  0.55559,  0.00436]], dtype=np.float64)
+
+    # poc_isaac=[1.0910989046096802, -0.5693130493164062, 0.20709329843521118] 
+    # qoc_isaac_wxyz=[0.23803524672985077, 0.008312370628118515, 0.033895134925842285, 0.9706293940544128]
+
+    # poc_isaac=[0.19285228848457336, 2.000744342803955, 0.20709329843521118] 
+    # qoc_isaac_wxyz=[0.6719053983688354, 0.023463435471057892, -0.02583491802215576, -0.739814281463623]
+
+    # poc_isaac=[-0.38128015398979187, 2.0024003982543945, 0.20709329843521118] 
+    # qoc_isaac_wxyz=[0.7699242830276489, 0.026886362582445145, -0.022250831127166748, -0.6371803283691406]
+
+    poc_isaac=[0.18570639193058014, -1.201640248298645, 0.20709329843521118] 
+    qoc_isaac_wxyz=[0.650500476360321, 0.02271595038473606, 0.026494503021240234, 0.7587037086486816]
 
 
-    # pos_w = src_pts_new[3]
-    # quat_wxyz = [1, 0, 0, 0]
+    pos_w, R_c2w = isaac_pose_to_world_pos_rot(poc_isaac, qoc_isaac_wxyz, device=device)
 
-    pos_w = [1.485949,  0.35438,  -3.344182]
-    # quat_wxyz = [0.395616,  0.470497, -0.567977,  0.547286]
-    quat_wxyz = [0.995433,  0.094683,  0.00259,   0.011906]
-    
-    # quat_wxyz =  [0.7703934907913208, 0.0, 0.6375686526298523, 0.0]
 
-    # quat_wxyz_test = [0.7703935503959656, 0.0, 0.0, -0.6375687122344971]
-    # quat_wxyz_test = [0.395616,  0.470497, -0.567977,  0.547286]
+    # quat_wxyz_test = (-0.5169855943050016, -0.48200393793554497, 0.4824559007372416, 0.5173339375486095)
     # euler_test = euler_xyz_from_quaternion_wxyz(torch.tensor(quat_wxyz_test).view(1,4))
     # print("test euler (deg) =", euler_test.cpu().numpy() * 180.0 / math.pi)
 
-    # euler_test_angles = [  0. ,79.22152, 0]  # in degrees
+    # euler_test_angles = [ -4.,0.0, 0]  # in degrees
+    # euler_test_angles = [  0. ,-4.0, 0]  # in degrees
     # euler_test_rad = torch.tensor(euler_test_angles, dtype=torch.float32).view(1, 3) * (math.pi / 180.0)
     # quat_wxyz_test = quaternion_wxyz_from_euler_xyz(euler_test_rad)[0].cpu().numpy().tolist()
     # print("Using quat_wxyz_test =", quat_wxyz_test) 
 
 
-    model_path = "/home/zgao/video_data_process/results_corridor/3dgs_output"
-    source_path = "/home/zgao/video_data_process/results_corridor/colmap_data_undistorted"
-    iteration = 30000
-    ply_path = "/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.ply"
-    precomputed_mask_path = "/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt"
-    device = "cuda"
 
     parser = argparse.ArgumentParser()
     model = ModelParams(parser, sentinel=True)
@@ -300,7 +396,8 @@ def main():
     is_target = is_target.bool().to(device)
     mask_color = is_target.float().unsqueeze(1).repeat(1, 3)
 
-    w2c = w2c_from_pos_quat(pos_w, quat_wxyz, device=device)
+    w2c = w2c_from_pos_rot(pos_w, R_c2w, device=device)
+
     cam = SimpleCam(
         width=intr["width"],
         height=intr["height"],
@@ -371,6 +468,10 @@ def main():
         occ_rgb = occ_rgb[0]
     if unocc_rgb.dim() == 3:
         unocc_rgb = unocc_rgb[0]
+    occ_mask = torch.flip(occ_mask, dims=[-1])
+    unocc_mask = torch.flip(unocc_mask, dims=[-1])
+    occ_rgb = torch.flip(occ_rgb, dims=[-1])
+    unocc_rgb = torch.flip(unocc_rgb, dims=[-1])
     torchvision.utils.save_image(occ_rgb, occ_rgb_path)
     torchvision.utils.save_image(unocc_rgb, unocc_rgb_path)
     print(f"saved occ mask   -> {occ_path}")
