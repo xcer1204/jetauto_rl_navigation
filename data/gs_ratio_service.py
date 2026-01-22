@@ -9,7 +9,7 @@ import rpyc
 from rpyc.utils.server import ThreadedServer
 import sys
 # Make SAGA code importable
-SAGA_ROOT = "/home/zgao/SegAnyGAussians"
+SAGA_ROOT = "/home/ubuntu/SegAnyGAussians"
 if SAGA_ROOT not in sys.path:
     sys.path.append(SAGA_ROOT)
 # ---- SAGA / 3DGS code imports (same as your first script)

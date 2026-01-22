@@ -9,7 +9,7 @@ import torch
 import torchvision
 import sys
 # Make SAGA code importable
-SAGA_ROOT = "/home/zgao/SegAnyGAussians"
+SAGA_ROOT = "/home/ubuntu/SegAnyGAussians"
 if SAGA_ROOT not in sys.path:
     sys.path.append(SAGA_ROOT)
     
@@ -197,11 +197,11 @@ def main():
     pos_w = [-0.38128018379211426, 2.0024003982543945, 0.20709329843521118]
     quat_wxyz = [-0.06844878941774368, -0.06373614817857742, 0.6790152788162231, 0.7281900644302368]
 
-    model_path = "/home/zgao/video_data_process/results_corridor/3dgs_output"
-    source_path = "/home/zgao/video_data_process/results_corridor/colmap_data_undistorted"
+    model_path = "/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output"
+    source_path = "/home/ubuntu/xc_isaac/video_data_process/results_corridor/colmap_data_undistorted"
     iteration = 30000
-    ply_path = "/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.ply"
-    precomputed_mask_path = "/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt"
+    ply_path = "/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.ply"
+    precomputed_mask_path = "/home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt"
     device = "cuda"
 
     parser = argparse.ArgumentParser()
