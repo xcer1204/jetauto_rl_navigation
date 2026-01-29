@@ -18,6 +18,7 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+# parser.add_argument("--task", type=str, default="Jetauto-Navigation-Direct-SingleRoom-Empty-v0", help="Name of the task.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -52,6 +53,7 @@ def main():
     print(f"[INFO]: Gym action space: {env.action_space}")
     # reset environment
     env.reset()
+    step = 0
     # simulate environment
     while simulation_app.is_running():
         # run everything in inference mode
@@ -61,6 +63,9 @@ def main():
             actions = 1.0 * torch.ones(env.action_space.shape, device=env.unwrapped.device)
             # apply actions
             env.step(actions)
+        step += 1
+        if step < 20 or step % 50 == 0:
+            print(f"[STEP] {step}")
 
     # close the simulator
     env.close()

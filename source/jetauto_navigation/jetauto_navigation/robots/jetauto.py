@@ -10,7 +10,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 JETAUTO_CONFIG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         # usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/NVIDIA/Kaya/kaya.usd",
-        usd_path="/home/zgao/ros2_ws/src/simulations/jetauto_description/urdf/jetauto_driveable/jetauto_driveable.usd",
+        usd_path="/home/ubuntu/xc_isaac/jetauto_rl_navigation-main/source/jetauto_driveable/jetauto_driveable/jetauto_driveable.usd",
         
         # 可选：配置刚体和关节属性，如禁用自碰撞等
         # articulation_props=sim_utils.ArticulationRootPropertiesCfg(enabled_self_collisions=False), 

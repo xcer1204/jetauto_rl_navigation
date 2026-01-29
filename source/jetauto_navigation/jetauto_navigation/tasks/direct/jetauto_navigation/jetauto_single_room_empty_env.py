@@ -30,6 +30,15 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
     ALIGN_TRANSLATION = (0.089711, 0.740089, 0.192696)
 
     def __init__(self, cfg: JetautoSingleRoomEnvCfg, render_mode: str | None = None, **kwargs):
+
+        import inspect, os
+        # raise RuntimeError(f"[ENV-TRACE] Loaded env class from: {inspect.getfile(self.__class__)}")
+
+        # path = inspect.getfile(self.__class__)
+        # print("[ENV-REALPATH] class_file =", path, flush=True)
+        # print("[ENV-REALPATH] realpath    =", os.path.realpath(path), flush=True)
+        # print("[ENV-REALPATH] module      =", self.__class__.__module__, flush=True)
+
         super().__init__(cfg, render_mode, **kwargs)
 
         self._hist_len = 4
@@ -67,13 +76,22 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         # Compute sim-space bounds for the real rectangle [(1.2,-0.6), (-0.6,-0.6), (1.2,1.8), (-0.6,1.8), z=0]
         real_rect = torch.tensor(
             [
-                [1.2, 0.9, 0.0],
-                [-0.6, 0.9, 0.0],
+                [1.2, -0.6, 0.0],
+                [-0.6, -0.6, 0.0],
                 [1.2, 1.8, 0.0],
                 [-0.6, 1.8, 0.0],
             ],
             device=self.device,
         )
+        # real_rect = torch.tensor(
+        #     [
+        #         [1.2, 0.3, 0.0],
+        #         [-0.6, 0.3, 0.0],
+        #         [1.2, 1.8, 0.0],
+        #         [-0.6, 1.8, 0.0],
+        #     ],
+        #     device=self.device,
+        # )
         sim_rect = self._real_to_sim(real_rect)
         self._sim_bounds_min = sim_rect.min(dim=0).values[:2]
         self._sim_bounds_max = sim_rect.max(dim=0).values[:2]
@@ -86,7 +104,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         self._ratio_rpc = rpyc.connect("localhost", 18862, config={"allow_pickle": True})
         self._ratio_every = 8   # 每 8 step 更新一次（建议先大一点，避免太慢）
         self._ratio_step = 0
-
+        print("[ENV] env file:", __file__, flush=True)
 
     def _real_to_sim(self, pts_real: torch.Tensor) -> torch.Tensor:
         """Apply the measured real->sim similarity transform to points."""
@@ -473,5 +491,13 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
         intr = {"width": w, "height": h, "fx": fx, "fy": fy, "cx": cx, "cy": cy}
 
-        ratios_np = self._ratio_rpc.root.visible_ratio(w2c.detach().cpu().numpy(), intr)
-        self.curr_vis = torch.tensor(ratios_np, device=self.device, dtype=torch.float32).clamp(0.0, 1.0)
+        print(f"[RPC] step={self._ratio_step} calling ratio for {w2c.shape[0]} envs", flush=True)
+        # ratios_np = self._ratio_rpc.root.visible_ratio(w2c.detach().cpu().numpy(), intr)
+        w2c_list = w2c.detach().cpu().tolist()
+        ratios_np = self._ratio_rpc.root.visible_ratio(w2c_list, intr)
+        print(f"[RPC] step={self._ratio_step} got ratios shape={ratios_np.shape}", flush=True)
+        # self.curr_vis = torch.tensor(ratios_np, device=self.device, dtype=torch.float32).clamp(0.0, 1.0)
+        ratios_list = ratios_np.tolist() if hasattr(ratios_np, "tolist") else ratios_np
+        if not isinstance(ratios_list, (list, tuple)):
+            ratios_list = [float(ratios_list)]
+        self.curr_vis = torch.tensor(ratios_list, device=self.device, dtype=torch.float32).clamp(0.0, 1.0)

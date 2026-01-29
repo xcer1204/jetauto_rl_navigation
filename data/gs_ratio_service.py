@@ -1,7 +1,7 @@
 # gs_ratio_service.py
 import math
 import threading
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -257,10 +257,41 @@ class GSVisibilityEngine:
         # In-place transform on CUDA
         transform_gaussians_similarity_inplace(self.gaussians, T, s)
 
+    def _resolve_intrinsics(self, intr: Optional[Dict[str, Union[int, float]]]) -> Dict[str, float]:
+        if intr is None:
+            return {
+                "width": float(FIXED_WIDTH),
+                "height": float(FIXED_HEIGHT),
+                "fx": float(FIXED_FX),
+                "fy": float(FIXED_FY),
+                "cx": float(FIXED_CX),
+                "cy": float(FIXED_CY),
+            }
+        required = ("width", "height", "fx", "fy", "cx", "cy")
+        missing = [k for k in required if k not in intr]
+        if missing:
+            raise ValueError(f"Missing intrinsics keys: {missing}")
+        return {
+            "width": float(intr["width"]),
+            "height": float(intr["height"]),
+            "fx": float(intr["fx"]),
+            "fy": float(intr["fy"]),
+            "cx": float(intr["cx"]),
+            "cy": float(intr["cy"]),
+        }
+
     @torch.no_grad()
-    def visible_ratio(self, w2c_list: Any, znear: float = 0.01, zfar: float = 100.0, thr: float = 0.5) -> np.ndarray:
+    def visible_ratio(
+        self,
+        w2c_list: Any,
+        intr: Optional[Dict[str, Union[int, float]]] = None,
+        znear: float = 0.01,
+        zfar: float = 100.0,
+        thr: float = 0.5,
+    ) -> np.ndarray:
         """
         w2c_list: list/np array of shape (N,4,4) in ISAAC world coordinates (I)
+        intr: dict with width/height/fx/fy/cx/cy; if None uses FIXED_*
         return: np.ndarray (N,) ratios
         """
         with self._lock:
@@ -269,13 +300,21 @@ class GSVisibilityEngine:
                 w2c = w2c.unsqueeze(0)
             N = w2c.shape[0]
 
+            intr_vals = self._resolve_intrinsics(intr)
+            cam_w = int(round(intr_vals["width"]))
+            cam_h = int(round(intr_vals["height"]))
+            cam_fx = float(intr_vals["fx"])
+            cam_fy = float(intr_vals["fy"])
+            cam_cx = float(intr_vals["cx"])
+            cam_cy = float(intr_vals["cy"])
+
             ratios = np.zeros((N,), dtype=np.float32)
 
             for i in range(N):
                 cam = SimpleCam(
-                    FIXED_WIDTH, FIXED_HEIGHT,
-                    FIXED_FX, FIXED_FY,
-                    FIXED_CX, FIXED_CY,
+                    cam_w, cam_h,
+                    cam_fx, cam_fy,
+                    cam_cx, cam_cy,
                     w2c[i],
                     znear=znear, zfar=zfar, device=self.device,
                 )
@@ -314,16 +353,25 @@ class RatioService(rpyc.Service):
         self.engine = engine
         self._n_calls = 0
 
-    def exposed_visible_ratio(self, w2c_list):
+    def on_connect(self, conn):
+        print("[GS-RPC] client connected", flush=True)
+
+    def on_disconnect(self, conn):
+        print("[GS-RPC] client disconnected", flush=True)
+
+    def exposed_visible_ratio(self, w2c_list, intr=None):
         self._n_calls += 1
-        ratios = self.engine.visible_ratio(w2c_list)
+        ratios = self.engine.visible_ratio(w2c_list, intr=intr)
 
         # 每次调用都打印一行（确认通信）
         n = len(ratios) if hasattr(ratios, "__len__") else 1
         r0 = float(ratios[0]) if n > 0 else float(ratios)
         mean_ratio = float(np.mean(ratios)) if n > 0 else float(ratios)
+        intr_info = ""
+        if isinstance(intr, dict) and "width" in intr and "height" in intr:
+            intr_info = f" intr={int(intr['width'])}x{int(intr['height'])}"
         print(
-            f"[GS-RPC] call={self._n_calls} views={n} ratio0={r0:.4f} mean={mean_ratio:.4f}",
+            f"[GS-RPC] call={self._n_calls} views={n} ratio0={r0:.4f} mean={mean_ratio:.4f}{intr_info}",
             flush=True,
         )
 
