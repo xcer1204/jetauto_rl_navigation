@@ -212,8 +212,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         self._ratio_step += 1
-        if (self._ratio_step % self._ratio_every) == 0:
-            self._query_ratio_from_rpc()
+        self._query_ratio_from_rpc()
 
 
         with torch.no_grad():
@@ -274,15 +273,15 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         inside_y = (robot_y >= min_y) & (robot_y <= max_y)
         wall_collision = ~(inside_x & inside_y)
 
-        obs_xy = self._obstacle_pos_current[:, :2].unsqueeze(1)
-        dist_to_obs = torch.norm(robot_xy.unsqueeze(1) - obs_xy, dim=-1)
-        obs_collision = (dist_to_obs < (self.cfg.env_params.obstacle.r + self.cfg.env_params.robot_r)).any(dim=1)
+        # obs_xy = self._obstacle_pos_current[:, :2].unsqueeze(1)
+        # dist_to_obs = torch.norm(robot_xy.unsqueeze(1) - obs_xy, dim=-1)
+        # obs_collision = (dist_to_obs < (self.cfg.env_params.obstacle.r + self.cfg.env_params.robot_r)).any(dim=1)
+        #
+        # target_xy = self._target_pos_current[:, :2]
+        # dist_to_target = torch.norm(robot_xy - target_xy, dim=-1)
+        # target_collision = dist_to_target < (self.cfg.env_params.target.r + self.cfg.env_params.robot_r)
 
-        target_xy = self._target_pos_current[:, :2]
-        dist_to_target = torch.norm(robot_xy - target_xy, dim=-1)
-        target_collision = dist_to_target < (self.cfg.env_params.target.r + self.cfg.env_params.robot_r)
-
-        self.collision_mask = wall_collision | obs_collision | target_collision
+        self.collision_mask = wall_collision
 
         return {
             "policy": obs_2048,
@@ -310,19 +309,27 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
         # 3) additional term P_t
         eps = 1e-6
-        P_t = torch.where(O_t <= eps, torch.full_like(O_t, 5.0), torch.full_like(O_t, -0.1))
+        P_t = torch.where(O_t <= eps, torch.full_like(O_t, 5.0), torch.full_like(O_t, -0.01))
 
-        # 4) final reward
-        reward = delta_O + P_t
+        # 4) collision penalty
+        collision_penalty = torch.where(
+            self.collision_mask,
+            torch.full_like(O_t, -5.0),
+            torch.zeros_like(O_t),
+        )
 
-        # 5) update prev for next step (very important)
+        # 5) final reward
+        reward = delta_O + P_t + collision_penalty
+
+        # 6) update prev for next step (very important)
         self.prev_vis = self.curr_vis.clone()
 
-        # 6) logging
+        # 7) logging
         self.extras["vis_ratio"] = float(vis_t.mean().item())
         self.extras["occ_ratio"] = float(O_t.mean().item())
         self.extras["delta_O"] = float(delta_O.mean().item())
         self.extras["P_t"] = float(P_t.mean().item())
+        self.extras["collision_penalty"] = float(collision_penalty.mean().item())
         self.extras["success"] = bool((O_t <= eps).any().item())
 
         return reward
@@ -330,9 +337,9 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         curr_vis = self.curr_vis.clamp(0.0, 1.0)
-        success = curr_vis >= 0.99
-
         failed = self.collision_mask
+        success = (curr_vis >= 0.99) & (~failed)
+
         # terminated = success
         terminated = success | failed
 
