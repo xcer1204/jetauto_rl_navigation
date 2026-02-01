@@ -76,16 +76,15 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         # Compute sim-space bounds for the real rectangle [(1.2,-0.6), (-0.6,-0.6), (1.2,1.8), (-0.6,1.8), z=0]
         sim_rect = torch.tensor(
             [
-                [1.2, 1.1, 0.0],
-                [-1.0, 1.1, 0.0],
-                [1.2, 2.0, 0.0],
-                [-1.0, 2.0, 0.0],
+                [1.2, 1.1],
+                [-1.0, 1.1],
+                [1.2, 2.0],
+                [-1.0, 2.0],
             ],
             device=self.device,
         )
 
-        self._sim_bounds_min = sim_rect.min(dim=0).values[:2]
-        self._sim_bounds_max = sim_rect.max(dim=0).values[:2]
+        self._sim_rect = sim_rect
 
         # placeholders for logical target/obstacle positions (not spawned)
         self._target_pos_current = torch.zeros(self.num_envs, 3, device=self.device)
@@ -266,11 +265,13 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         robot_x = robot_xy[:, 0]
         robot_y = robot_xy[:, 1]
 
-        margin = self.cfg.env_params.walls.wall_margin
-        min_x, min_y = self._sim_bounds_min
-        max_x, max_y = self._sim_bounds_max
-        inside_x = (robot_x >= min_x + margin) & (robot_x <= max_x - margin)
-        inside_y = (robot_y >= min_y + margin) & (robot_y <= max_y - margin)
+        # margin = self.cfg.env_params.walls.wall_margin
+        min_xy = self._sim_rect.min(dim=0).values
+        max_xy = self._sim_rect.max(dim=0).values
+        min_x, min_y = min_xy
+        max_x, max_y = max_xy
+        inside_x = (robot_x >= min_x) & (robot_x <= max_x)
+        inside_y = (robot_y >= min_y) & (robot_y <= max_y)
         wall_collision = ~(inside_x & inside_y)
 
         obs_xy = self._obstacle_pos_current[:, :2].unsqueeze(1)
@@ -375,41 +376,36 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
             ry = torch.rand(num_envs, device=device, dtype=dtype) * (y2 - y1) + y1
             return torch.stack((rx, ry), dim=-1)
 
-        # robot_xy = sample_in_rect(
-        #     num_envs=len(env_ids),
-        #     x1=-0.1,
-        #     x2=0.25,
-        #     y1=-0.8,
-        #     y2=-0.6,
-        #     device=self.device,
-        # )
+        min_xy = self._sim_rect.min(dim=0).values
+        max_xy = self._sim_rect.max(dim=0).values
+        min_x, min_y = min_xy
+        max_x, max_y = max_xy
 
-        # print("robot_xy:", robot_xy)
-
-        center_xy = 0.5 * (self._sim_bounds_min + self._sim_bounds_max)
-        robot_xy = center_xy.unsqueeze(0).expand(len(env_ids), -1)
-
-        # robot_xy =torch.tensor([[-0.4053, 2.1290]], device=self.device) #goal
+        robot_xy = sample_in_rect(
+            num_envs=len(env_ids),
+            x1=min_x,
+            x2=max_x,
+            y1=min_y,
+            y2=max_y,
+            device=self.device,
+        )
 
         robot_pos = torch.cat([robot_xy, torch.zeros(len(env_ids), 1, device=self.device)], dim=-1)
 
         root_states_a = self.robot_a.data.default_root_state[env_ids].clone()
         root_states_a[:, :3] = self.scene.env_origins[env_ids] + robot_pos
 
-        # yaw = (torch.rand(len(env_ids), device=self.device) - 0.5) * 2 * math.pi
-
-        x = robot_xy[:, 0]
-        y = robot_xy[:, 1]
-
-        yaw = torch.atan2(-y, -x)  # 指向原点的朝向（z-up，只算yaw）
+        # x = robot_xy[:, 0]
+        # y = robot_xy[:, 1]
+        #
+        # yaw = torch.atan2(-y, -x)  # 指向原点的朝向（z-up，只算yaw）
         # 然后四元数（w,x,y,z）
+        yaw = (torch.rand(len(env_ids), device=self.device) - 0.5) * 2 * math.pi
         half = 0.5 * yaw
         quat = torch.stack([torch.cos(half),
                             torch.zeros_like(half),
                             torch.zeros_like(half),
                             torch.sin(half)], dim=-1)
-
-        # quat = math_utils.quat_from_angle_axis(yaw, torch.tensor([0.0, 0.0, 1.0], device=self.device))
 
         root_states_a[:, 3:7] = quat
 
