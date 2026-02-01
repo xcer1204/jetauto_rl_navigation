@@ -1,5 +1,6 @@
 # gs_ratio_service.py
 import math
+import os
 import threading
 from typing import Any, Dict, Optional, Union
 
@@ -9,7 +10,7 @@ import rpyc
 from rpyc.utils.server import ThreadedServer
 import sys
 # Make SAGA code importable
-SAGA_ROOT = "/home/ubuntu/SegAnyGAussians"
+SAGA_ROOT = "/home/zgao/SegAnyGAussians"
 if SAGA_ROOT not in sys.path:
     sys.path.append(SAGA_ROOT)
 # ---- SAGA / 3DGS code imports (same as your first script)
@@ -223,15 +224,38 @@ class GSVisibilityEngine:
 
         # Load Gaussians (G world)
         self.gaussians = GaussianModel(dataset.sh_degree)
-        _ = Scene(
-            dataset,
-            gaussians=self.gaussians,
-            load_iteration=iteration,
-            shuffle=False,
-            mode="eval",
-            target="scene",
-            sample_rate=1.0,
-        )
+        has_colmap = os.path.exists(os.path.join(dataset.source_path, "sparse"))
+        has_blender = os.path.exists(os.path.join(dataset.source_path, "transforms_train.json"))
+        if has_colmap or has_blender:
+            _ = Scene(
+                dataset,
+                gaussians=self.gaussians,
+                load_iteration=iteration,
+                shuffle=False,
+                mode="eval",
+                target="scene",
+                sample_rate=1.0,
+            )
+        else:
+            ply_path = os.path.join(
+                model_path,
+                "point_cloud",
+                "iteration_" + str(iteration),
+                "scene_point_cloud.ply",
+            )
+            if not os.path.exists(ply_path):
+                raise FileNotFoundError(
+                    "Missing scene data and point cloud.\n"
+                    f"- source_path: {dataset.source_path} (no 'sparse' or 'transforms_train.json')\n"
+                    f"- expected ply: {ply_path}\n"
+                    "Please set source_path to a COLMAP/Blender dataset root or update model_path/iteration."
+                )
+            print(
+                "Warning: source_path has no 'sparse' or 'transforms_train.json'; "
+                "loading Gaussians directly from point cloud.",
+                flush=True,
+            )
+            self.gaussians.load_ply(ply_path)
 
         # Load is_target (N,)
         is_target = torch.load(precomputed_mask_path, map_location=device)
@@ -379,10 +403,10 @@ class RatioService(rpyc.Service):
 
 def main():
     engine = GSVisibilityEngine(
-        model_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output",
-        source_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/colmap_data_undistorted",
+        model_path="/home/zgao/video_data_process/results_corridor/3dgs_output",
+        source_path="/home/zgao/video_data_process/results_corridor/colmap_data_undistorted",
         iteration=30000,
-        precomputed_mask_path="/home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
+        precomputed_mask_path="/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
         device="cuda",
     )
     server = ThreadedServer(

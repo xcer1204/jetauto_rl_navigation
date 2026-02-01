@@ -74,25 +74,16 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         self._align_translation = torch.tensor(self.ALIGN_TRANSLATION, device=self.device)
 
         # Compute sim-space bounds for the real rectangle [(1.2,-0.6), (-0.6,-0.6), (1.2,1.8), (-0.6,1.8), z=0]
-        real_rect = torch.tensor(
+        sim_rect = torch.tensor(
             [
-                [1.2, -0.6, 0.0],
-                [-0.6, -0.6, 0.0],
-                [1.2, 1.8, 0.0],
-                [-0.6, 1.8, 0.0],
+                [1.2, 1.1, 0.0],
+                [-1.0, 1.1, 0.0],
+                [1.2, 2.0, 0.0],
+                [-1.0, 2.0, 0.0],
             ],
             device=self.device,
         )
-        # real_rect = torch.tensor(
-        #     [
-        #         [1.2, 0.3, 0.0],
-        #         [-0.6, 0.3, 0.0],
-        #         [1.2, 1.8, 0.0],
-        #         [-0.6, 1.8, 0.0],
-        #     ],
-        #     device=self.device,
-        # )
-        sim_rect = self._real_to_sim(real_rect)
+
         self._sim_bounds_min = sim_rect.min(dim=0).values[:2]
         self._sim_bounds_max = sim_rect.max(dim=0).values[:2]
 
@@ -142,9 +133,8 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
 
         bg_usd_cfg = sim_utils.UsdFileCfg(
-            usd_path="/home/ubuntu/xc_isaac/jetauto_rl_navigation-main/source/jetauto_navigation/jetauto_navigation/tasks/direct/jetauto_navigation/source/corridor.usdz",
-            # usd_path="/home/zgao/Downloads/corridor.usdz",
-            # usd_path="/home/zgao/video_data_process/results_lab1211/3dgs_output/point_cloud/iteration_30000/lab.usdz",
+            # usd_path="/home/ubuntu/xc_isaac/jetauto_rl_navigation-main/source/jetauto_navigation/jetauto_navigation/tasks/direct/jetauto_navigation/source/corridor.usdz",
+            usd_path="/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.usdz",
             scale=(bg_scale, bg_scale, bg_scale),
         )
         sim_utils.spawn_from_usd(
