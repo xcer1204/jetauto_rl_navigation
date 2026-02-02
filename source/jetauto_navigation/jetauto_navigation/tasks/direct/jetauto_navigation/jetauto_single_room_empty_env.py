@@ -465,29 +465,13 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
             cam_pos_w = root_pos + math_utils.quat_apply(root_q_wxyz, off_pos)
             cam_quat_w = self._quat_mul_wxyz(root_q_wxyz, off_q_wxyz)
 
-        R_c2w = math_utils.matrix_from_quat(cam_quat_w)
+        # Service expects Isaac poses: [px, py, pz, qw, qx, qy, qz]
         E = cam_pos_w.shape[0]
-        c2w = torch.eye(4, device=self.device).unsqueeze(0).repeat(E, 1, 1)
-        c2w[:, :3, :3] = R_c2w
-        c2w[:, :3, 3] = cam_pos_w
-        w2c = torch.inverse(c2w)
+        poses = torch.cat([cam_pos_w, cam_quat_w], dim=-1)  # (E,7) wxyz
 
-        w = int(self.cfg.env_params.camera.width)
-        h = int(self.cfg.env_params.camera.height)
-
-        fovx = 1.5701
-        fovy = 1.0260
-        fx = w / (2.0 * math.tan(fovx / 2.0))
-        fy = h / (2.0 * math.tan(fovy / 2.0))
-        cx = w * 0.5
-        cy = h * 0.5
-
-        intr = {"width": w, "height": h, "fx": fx, "fy": fy, "cx": cx, "cy": cy}
-
-        print(f"[RPC] step={self._ratio_step} calling ratio for {w2c.shape[0]} envs", flush=True)
-        # ratios_np = self._ratio_rpc.root.visible_ratio(w2c.detach().cpu().numpy(), intr)
-        w2c_list = w2c.detach().cpu().tolist()
-        ratios_np = self._ratio_rpc.root.visible_ratio(w2c_list, intr)
+        print(f"[RPC] step={self._ratio_step} calling ratio for {E} envs", flush=True)
+        poses_list = poses.detach().cpu().tolist()
+        ratios_np = self._ratio_rpc.root.visible_ratio(poses_list)
         print(f"[RPC] step={self._ratio_step} got ratios shape={ratios_np.shape}", flush=True)
         # self.curr_vis = torch.tensor(ratios_np, device=self.device, dtype=torch.float32).clamp(0.0, 1.0)
         ratios_list = ratios_np.tolist() if hasattr(ratios_np, "tolist") else ratios_np

@@ -14,7 +14,7 @@ if SAGA_ROOT not in sys.path:
     sys.path.append(SAGA_ROOT)
     
 from arguments import ModelParams, PipelineParams
-from gaussian_renderer import render_with_depth
+from gaussian_renderer import render_mask, render_with_depth
 from scene import Scene, GaussianModel
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 
@@ -315,7 +315,7 @@ def main():
     model_path = "/home/zgao/video_data_process/results_corridor/3dgs_output"
     source_path = "/home/zgao/video_data_process/results_corridor/colmap_data_undistorted"
     iteration = 30000
-    ply_path = "/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.ply"
+    ply_path = "/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/scene_point_cloud.ply"
     precomputed_mask_path = "/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt"
     device = "cuda"
     # in isaaclab actually used intrinsics
@@ -357,9 +357,11 @@ def main():
     # poc_isaac=[-0.38128015398979187, 2.0024003982543945, 0.20709329843521118] 
     # qoc_isaac_wxyz=[0.7699242830276489, 0.026886362582445145, -0.022250831127166748, -0.6371803283691406]
 
-    poc_isaac=[0.18570639193058014, -1.201640248298645, 0.20709329843521118] 
-    qoc_isaac_wxyz=[0.650500476360321, 0.02271595038473606, 0.026494503021240234, 0.7587037086486816]
+    # poc_isaac=[0.18570639193058014, -1.201640248298645, 0.20709329843521118] 
+    # qoc_isaac_wxyz=[0.650500476360321, 0.02271595038473606, 0.026494503021240234, 0.7587037086486816]
 
+    poc_isaac=[-7.963180541992188e-05, 1.3711419105529785, 0.20709329843521118] 
+    qoc_isaac_wxyz=[0.7066760659217834, 0.02467767521739006, -0.024677634239196777, -0.7066760659217834]
 
     pos_w, R_c2w = isaac_pose_to_world_pos_rot(poc_isaac, qoc_isaac_wxyz, device=device)
 
@@ -394,7 +396,7 @@ def main():
 
     is_target = torch.load(precomputed_mask_path, map_location=device)
     is_target = is_target.bool().to(device)
-    mask_color = is_target.float().unsqueeze(1).repeat(1, 3)
+    mask_color = is_target.float()
 
     w2c = w2c_from_pos_rot(pos_w, R_c2w, device=device)
 
@@ -411,13 +413,12 @@ def main():
 
     bg = torch.zeros(3, device=device)
 
-    occ = render_with_depth(
+    occ = render_mask(
         cam,
         gaussians,
         pipe,
         bg,
-        override_mask=mask_color,
-        filtered_mask=None,
+        precomputed_mask=mask_color,
     )["mask"]
     occ_rgb = render_with_depth(
         cam,
@@ -429,7 +430,7 @@ def main():
     )["render"]
     if occ.dim() == 3:
         occ = occ[0]
-    occ_mask = (occ > 0.5).float()
+    occ_mask = (occ > 0.7).float()
 
     unocc = render_with_depth(
         cam,
@@ -449,11 +450,12 @@ def main():
     )["render"]
     if unocc.dim() == 3:
         unocc = unocc[0]
-    unocc_mask = (unocc > 0.5).float()
+    unocc_mask = (unocc > 0.7).float()
 
     A_full = float(unocc_mask.sum().item())
     A_vis = float(occ_mask.sum().item())
     ratio = 0.0 if A_full <= 0 else (A_vis / (A_full + 1e-6))
+    ratio = float(max(0.0, min(1.0, ratio)))
     print(f"visible ratio = {ratio:.6f}")
 
     out_dir = os.path.join(os.path.dirname(__file__), "gs_ratio_test_outputs")
@@ -462,8 +464,6 @@ def main():
     unocc_path = os.path.join(out_dir, "mask_no_occ.png")
     occ_rgb_path = os.path.join(out_dir, "rgb_occ.png")
     unocc_rgb_path = os.path.join(out_dir, "rgb_no_occ.png")
-    torchvision.utils.save_image(occ_mask, occ_path)
-    torchvision.utils.save_image(unocc_mask, unocc_path)
     if occ_rgb.dim() == 3:
         occ_rgb = occ_rgb[0]
     if unocc_rgb.dim() == 3:
@@ -472,6 +472,8 @@ def main():
     unocc_mask = torch.flip(unocc_mask, dims=[-1])
     occ_rgb = torch.flip(occ_rgb, dims=[-1])
     unocc_rgb = torch.flip(unocc_rgb, dims=[-1])
+    torchvision.utils.save_image(occ_mask, occ_path)
+    torchvision.utils.save_image(unocc_mask, unocc_path)
     torchvision.utils.save_image(occ_rgb, occ_rgb_path)
     torchvision.utils.save_image(unocc_rgb, unocc_rgb_path)
     print(f"saved occ mask   -> {occ_path}")

@@ -15,23 +15,12 @@ if SAGA_ROOT not in sys.path:
     sys.path.append(SAGA_ROOT)
 # ---- SAGA / 3DGS code imports (same as your first script)
 from arguments import ModelParams, PipelineParams
-from gaussian_renderer import render_with_depth
+from gaussian_renderer import render_mask, render_with_depth
 from scene import Scene, GaussianModel
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 
 # ---- For rotating per-Gaussian rotations + SHs (full similarity transform)
-import einops
-from einops import einsum
-from e3nn import o3
-from pytorch3d.transforms import matrix_to_quaternion
-
-
-# =========================
-# 1) Put YOUR Isaac ALIGN here (same as env)
-# =========================
-ALIGN_SCALE = 0.3664808278887077
-ALIGN_ROT_XYZW = (0.04309, 0.03407, -0.02809, 0.99810)  # (x,y,z,w)
-ALIGN_TRANSLATION = (0.089711, 0.740089, 0.192696)      # (tx,ty,tz)
+ 
 
 # Fixed camera intrinsics; edit if needed.
 FIXED_FX = 366.4996337890625
@@ -41,17 +30,33 @@ FIXED_CY = 160.0
 FIXED_WIDTH = 320
 FIXED_HEIGHT = 320
 
+# ===== Isaac -> 3DGS conversion (same as gs_ratio_test_3dgs_pose.py)
+SCALE = 0.3664808278887077
+R = np.array(
+    [
+        [-0.996101, -0.060011, -0.064665],
+        [ 0.058997,  0.091831, -0.994025],
+        [ 0.065591, -0.993965, -0.087933]
+    ],
+    dtype=np.float64,
+)
+T = np.array([0.089711, 0.740089, 0.192696], dtype=np.float64)
+EXTRA_ROT = np.array(
+    [
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+    ],
+    dtype=np.float64,
+)
 
-# =========================
-# 2) Helpers
-# =========================
 @torch.jit.script
 def rotation_matrix_from_quaternion_wxyz(quaternion_wxyz: torch.Tensor) -> torch.Tensor:
     """(N,4) wxyz -> (N,3,3)"""
     q = quaternion_wxyz
     q0, q1, q2, q3 = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
 
-    R = torch.stack(
+    Rm = torch.stack(
         [
             torch.stack([1 - 2 * q2 * q2 - 2 * q3 * q3, 2 * q1 * q2 - 2 * q3 * q0, 2 * q1 * q3 + 2 * q2 * q0], dim=1),
             torch.stack([2 * q1 * q2 + 2 * q3 * q0, 1 - 2 * q1 * q1 - 2 * q3 * q3, 2 * q2 * q3 - 2 * q1 * q0], dim=1),
@@ -59,88 +64,38 @@ def rotation_matrix_from_quaternion_wxyz(quaternion_wxyz: torch.Tensor) -> torch
         ],
         dim=1,
     )
-    return R
+    return Rm
 
+def w2c_from_pos_rot(pos_w: Union[list, np.ndarray, torch.Tensor],
+                     rot_c2w: Union[list, np.ndarray, torch.Tensor],
+                     device: str) -> torch.Tensor:
+    """Build w2c from camera pose in world (pos + rotation matrix)."""
+    pos = torch.as_tensor(pos_w, dtype=torch.float32, device=device)
+    rot = torch.as_tensor(rot_c2w, dtype=torch.float32, device=device)
 
-def to_so3(R: torch.Tensor) -> torch.Tensor:
-    """Project to nearest proper rotation matrix."""
-    U, _, Vt = torch.linalg.svd(R)
-    R_orth = U @ Vt
-    if torch.det(R_orth) < 0:
-        U[..., -1] *= -1
-        R_orth = U @ Vt
-    return R_orth
+    c2w = torch.eye(4, dtype=torch.float32, device=device)
+    c2w[:3, :3] = rot
+    c2w[:3, 3] = pos
 
+    w2c = torch.inverse(c2w)
+    return w2c
 
-def transform_shs(shs_feat: torch.Tensor, rotation_matrix_np: np.ndarray) -> torch.Tensor:
-    """Rotate SH features up to order 3. shs_feat: (N, 15, 3) on CPU double."""
-    # switch axes: yzx -> xyz (same as your earlier code)
-    P = np.array([[0, 0, 1], [1, 0, 0], [0, 1, 0]])
-    permuted_rotation_matrix = np.linalg.inv(P) @ rotation_matrix_np @ P
+def isaac_pose_to_world_pos_rot(pos_isaac: Union[list, np.ndarray, torch.Tensor],
+                                quat_isaac_wxyz: Union[list, np.ndarray, torch.Tensor],
+                                device: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert Isaac pose to 3DGS world pos + c2w rotation matrix."""
+    pos = torch.as_tensor(pos_isaac, dtype=torch.float32, device=device)
+    quat = torch.as_tensor(quat_isaac_wxyz, dtype=torch.float32, device=device)
+    quat = quat / torch.linalg.norm(quat)
 
-    rotation_matrix_fix = to_so3(torch.from_numpy(permuted_rotation_matrix))
-    rot_angles = o3._rotation.matrix_to_angles(rotation_matrix_fix)
+    R_isaac = rotation_matrix_from_quaternion_wxyz(quat.view(1, 4))[0]
+    R_t = torch.as_tensor(R, dtype=torch.float32, device=device)
+    T_t = torch.as_tensor(T, dtype=torch.float32, device=device)
+    extra_rot_t = torch.as_tensor(EXTRA_ROT, dtype=torch.float32, device=device)
 
-    D_1 = o3.wigner_D(1, rot_angles[0], -rot_angles[1], rot_angles[2])
-    D_2 = o3.wigner_D(2, rot_angles[0], -rot_angles[1], rot_angles[2])
-    D_3 = o3.wigner_D(3, rot_angles[0], -rot_angles[1], rot_angles[2])
-
-    # order-1
-    one_degree_shs = shs_feat[:, 0:3]
-    one_degree_shs = einops.rearrange(one_degree_shs, "n sh rgb -> n rgb sh")
-    one_degree_shs = einsum(D_1, one_degree_shs, "... i j, ... j -> ... i")
-    one_degree_shs = einops.rearrange(one_degree_shs, "n rgb sh -> n sh rgb")
-    shs_feat[:, 0:3] = one_degree_shs
-
-    # order-2
-    two_degree_shs = shs_feat[:, 3:8]
-    two_degree_shs = einops.rearrange(two_degree_shs, "n sh rgb -> n rgb sh")
-    two_degree_shs = einsum(D_2, two_degree_shs, "... i j, ... j -> ... i")
-    two_degree_shs = einops.rearrange(two_degree_shs, "n rgb sh -> n sh rgb")
-    shs_feat[:, 3:8] = two_degree_shs
-
-    # order-3
-    three_degree_shs = shs_feat[:, 8:15]
-    three_degree_shs = einops.rearrange(three_degree_shs, "n sh rgb -> n rgb sh")
-    three_degree_shs = einsum(D_3, three_degree_shs, "... i j, ... j -> ... i")
-    three_degree_shs = einops.rearrange(three_degree_shs, "n rgb sh -> n sh rgb")
-    shs_feat[:, 8:15] = three_degree_shs
-
-    return shs_feat
-
-
-def transform_gaussians_similarity_inplace(gaussians: GaussianModel, T: np.ndarray, scale: float) -> None:
-    """
-    In-place similarity transform:
-      X <- T * [X;1] , scaling += log(scale), rotation <- R * rotation, SH rotated.
-    T is 4x4, with rotation*scale in top-left.
-    """
-    device = gaussians._xyz.device
-
-    with torch.no_grad():
-        # 1) centers
-        ones = torch.ones((gaussians._xyz.shape[0], 1), device=device)
-        xyz_h = torch.cat([gaussians._xyz, ones], dim=1)  # (N,4)
-        Th = torch.tensor(T, device=device, dtype=torch.float32)
-        xyz_h2 = (Th @ xyz_h.t()).t()
-        gaussians._xyz = xyz_h2[:, :3]
-
-        # 2) isotropic scaling is stored log-space
-        gaussians._scaling = gaussians._scaling + float(np.log(scale))
-
-        # 3) rotations
-        R_norm = (T[:3, :3] / scale).astype(np.float32)   # pure rotation
-        R_norm_t = torch.tensor(R_norm, device=device, dtype=torch.float32)  # (3,3)
-
-        # gaussians.get_rotation: (N,4) wxyz -> (N,3,3)
-        Rg = rotation_matrix_from_quaternion_wxyz(gaussians.get_rotation)
-        Rnew = R_norm_t.unsqueeze(0) @ Rg
-        gaussians._rotation = matrix_to_quaternion(Rnew)  # (N,4) wxyz
-
-        # 4) rotate SH features (not strictly needed for mask-only override, but correct)
-        shs = gaussians._features_rest.detach().cpu().double()
-        shs = transform_shs(shs, R_norm)
-        gaussians._features_rest = shs.float().to(device)
+    pos_w = (R_t.T @ (pos - T_t)) / float(SCALE)
+    R_w = R_t.T @ R_isaac @ extra_rot_t
+    return pos_w, R_w
 
 
 class SimpleCam:
@@ -260,71 +215,37 @@ class GSVisibilityEngine:
         # Load is_target (N,)
         is_target = torch.load(precomputed_mask_path, map_location=device)
         self.is_target = is_target.bool().to(device)
-        self.mask_color = self.is_target.float().unsqueeze(1).repeat(1, 3)  # (Ng,3)
-
-        # --------- APPLY ALIGN ONCE: G -> I ----------
-        self._apply_align_once()
-
-    def _apply_align_once(self) -> None:
-        s = float(ALIGN_SCALE)
-        tx, ty, tz = [float(v) for v in ALIGN_TRANSLATION]
-        qx, qy, qz, qw = [float(v) for v in ALIGN_ROT_XYZW]  # xyzw
-
-        # quat -> R (wxyz batch of 1)
-        q_wxyz = torch.tensor([[qw, qx, qy, qz]], dtype=torch.float32)
-        R = rotation_matrix_from_quaternion_wxyz(q_wxyz)[0].cpu().numpy()  # (3,3)
-
-        T = np.eye(4, dtype=np.float32)
-        T[:3, :3] = (R * s).astype(np.float32)
-        T[:3, 3] = np.array([tx, ty, tz], dtype=np.float32)
-
-        # In-place transform on CUDA
-        transform_gaussians_similarity_inplace(self.gaussians, T, s)
+        self.mask_color = self.is_target.float()  # (Ng,)
 
     def _resolve_intrinsics(self, intr: Optional[Dict[str, Union[int, float]]]) -> Dict[str, float]:
-        if intr is None:
-            return {
-                "width": float(FIXED_WIDTH),
-                "height": float(FIXED_HEIGHT),
-                "fx": float(FIXED_FX),
-                "fy": float(FIXED_FY),
-                "cx": float(FIXED_CX),
-                "cy": float(FIXED_CY),
-            }
-        required = ("width", "height", "fx", "fy", "cx", "cy")
-        missing = [k for k in required if k not in intr]
-        if missing:
-            raise ValueError(f"Missing intrinsics keys: {missing}")
         return {
-            "width": float(intr["width"]),
-            "height": float(intr["height"]),
-            "fx": float(intr["fx"]),
-            "fy": float(intr["fy"]),
-            "cx": float(intr["cx"]),
-            "cy": float(intr["cy"]),
+            "width": float(FIXED_WIDTH),
+            "height": float(FIXED_HEIGHT),
+            "fx": float(FIXED_FX),
+            "fy": float(FIXED_FY),
+            "cx": float(FIXED_CX),
+            "cy": float(FIXED_CY),
         }
 
     @torch.no_grad()
     def visible_ratio(
         self,
-        w2c_list: Any,
-        intr: Optional[Dict[str, Union[int, float]]] = None,
+        poses_isaac: Any,
         znear: float = 0.01,
         zfar: float = 100.0,
-        thr: float = 0.5,
+        thr: float = 0.7,
     ) -> np.ndarray:
         """
-        w2c_list: list/np array of shape (N,4,4) in ISAAC world coordinates (I)
-        intr: dict with width/height/fx/fy/cx/cy; if None uses FIXED_*
+        poses_isaac: list/np array of shape (N,7) = [px,py,pz,qw,qx,qy,qz] in Isaac world coordinates
         return: np.ndarray (N,) ratios
         """
         with self._lock:
-            w2c = torch.tensor(w2c_list, dtype=torch.float32, device=self.device)
-            if w2c.dim() == 2:
-                w2c = w2c.unsqueeze(0)
-            N = w2c.shape[0]
+            pose = torch.tensor(poses_isaac, dtype=torch.float32, device=self.device)
+            if pose.dim() == 1:
+                pose = pose.unsqueeze(0)
+            N = pose.shape[0]
 
-            intr_vals = self._resolve_intrinsics(intr)
+            intr_vals = self._resolve_intrinsics(None)
             cam_w = int(round(intr_vals["width"]))
             cam_h = int(round(intr_vals["height"]))
             cam_fx = float(intr_vals["fx"])
@@ -335,18 +256,21 @@ class GSVisibilityEngine:
             ratios = np.zeros((N,), dtype=np.float32)
 
             for i in range(N):
+                pos_isaac = pose[i, 0:3]
+                quat_wxyz = pose[i, 3:7]
+                pos_w, R_c2w = isaac_pose_to_world_pos_rot(pos_isaac, quat_wxyz, device=self.device)
+                w2c = w2c_from_pos_rot(pos_w, R_c2w, device=self.device)
                 cam = SimpleCam(
                     cam_w, cam_h,
                     cam_fx, cam_fy,
                     cam_cx, cam_cy,
-                    w2c[i],
+                    w2c,
                     znear=znear, zfar=zfar, device=self.device,
                 )
 
-                occ = render_with_depth(
+                occ = render_mask(
                     cam, self.gaussians, self.pipe, self.bg,
-                    override_mask=self.mask_color,
-                    filtered_mask=None,
+                    precomputed_mask=self.mask_color,
                 )["mask"]
                 if occ.dim() == 3:
                     occ = occ[0]
@@ -363,7 +287,8 @@ class GSVisibilityEngine:
 
                 A_full = float(unocc.sum().item())
                 A_vis  = float(occ.sum().item())
-                ratios[i] = 0.0 if A_full <= 0 else (A_vis / (A_full + 1e-6))
+                ratio = 0.0 if A_full <= 0 else (A_vis / (A_full + 1e-6))
+                ratios[i] = float(max(0.0, min(1.0, ratio)))
 
             return ratios
 
@@ -383,19 +308,16 @@ class RatioService(rpyc.Service):
     def on_disconnect(self, conn):
         print("[GS-RPC] client disconnected", flush=True)
 
-    def exposed_visible_ratio(self, w2c_list, intr=None):
+    def exposed_visible_ratio(self, poses_isaac):
         self._n_calls += 1
-        ratios = self.engine.visible_ratio(w2c_list, intr=intr)
+        ratios = self.engine.visible_ratio(poses_isaac)
 
         # 每次调用都打印一行（确认通信）
         n = len(ratios) if hasattr(ratios, "__len__") else 1
         r0 = float(ratios[0]) if n > 0 else float(ratios)
         mean_ratio = float(np.mean(ratios)) if n > 0 else float(ratios)
-        intr_info = ""
-        if isinstance(intr, dict) and "width" in intr and "height" in intr:
-            intr_info = f" intr={int(intr['width'])}x{int(intr['height'])}"
         print(
-            f"[GS-RPC] call={self._n_calls} views={n} ratio0={r0:.4f} mean={mean_ratio:.4f}{intr_info}",
+            f"[GS-RPC] call={self._n_calls} views={n} ratio0={r0:.4f} mean={mean_ratio:.4f}",
             flush=True,
         )
 
