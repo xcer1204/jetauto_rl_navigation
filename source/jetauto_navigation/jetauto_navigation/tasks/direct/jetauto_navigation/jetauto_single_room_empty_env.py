@@ -92,7 +92,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
         # --- ratio RPC client ---
         self._ratio_rpc = rpyc.connect("localhost", 18862, config={"allow_pickle": True})
-        self._ratio_every = 8   # 每 8 step 更新一次（建议先大一点，避免太慢）
+        self._ratio_every = 1   # 每 8 step 更新一次（建议先大一点，避免太慢）
         self._ratio_step = 0
         print("[ENV] env file:", __file__, flush=True)
 
@@ -307,9 +307,8 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         # 2) dense reward: occlusion decrease is positive
         delta_O = O_prev - O_t
 
-        # 3) additional term P_t
-        eps = 1e-6
-        P_t = torch.where(O_t <= eps, torch.full_like(O_t, 5.0), torch.full_like(O_t, -0.01))
+        # 3) additional term P_t (success if visible ratio > 0.7)
+        P_t = torch.where(vis_t > 0.7, torch.full_like(O_t, 5.0), torch.full_like(O_t, -0.01))
 
         # 4) collision penalty
         collision_penalty = torch.where(
@@ -330,7 +329,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         self.extras["delta_O"] = float(delta_O.mean().item())
         self.extras["P_t"] = float(P_t.mean().item())
         self.extras["collision_penalty"] = float(collision_penalty.mean().item())
-        self.extras["success"] = bool((O_t <= eps).any().item())
+        self.extras["success"] = bool((vis_t > 0.7).any().item())
 
         return reward
 
@@ -338,7 +337,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         curr_vis = self.curr_vis.clamp(0.0, 1.0)
         failed = self.collision_mask
-        success = (curr_vis >= 0.99) & (~failed)
+        success = (curr_vis > 0.7) & (~failed)
 
         # terminated = success
         terminated = success | failed
@@ -469,10 +468,10 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
         E = cam_pos_w.shape[0]
         poses = torch.cat([cam_pos_w, cam_quat_w], dim=-1)  # (E,7) wxyz
 
-        print(f"[RPC] step={self._ratio_step} calling ratio for {E} envs", flush=True)
-        poses_list = poses.detach().cpu().tolist()
-        ratios_np = self._ratio_rpc.root.visible_ratio(poses_list)
-        print(f"[RPC] step={self._ratio_step} got ratios shape={ratios_np.shape}", flush=True)
+        # print(f"[RPC] step={self._ratio_step} calling ratio for {E} envs", flush=True)
+        poses_np = poses.detach().cpu().numpy()
+        ratios_np = self._ratio_rpc.root.visible_ratio(poses_np)
+        # print(f"[RPC] step={self._ratio_step} got ratios shape={ratios_np.shape}", flush=True)
         # self.curr_vis = torch.tensor(ratios_np, device=self.device, dtype=torch.float32).clamp(0.0, 1.0)
         ratios_list = ratios_np.tolist() if hasattr(ratios_np, "tolist") else ratios_np
         if not isinstance(ratios_list, (list, tuple)):

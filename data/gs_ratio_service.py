@@ -2,7 +2,7 @@
 import math
 import os
 import threading
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, Tuple
 
 import numpy as np
 import torch
@@ -240,9 +240,14 @@ class GSVisibilityEngine:
         return: np.ndarray (N,) ratios
         """
         with self._lock:
-            pose = torch.tensor(poses_isaac, dtype=torch.float32, device=self.device)
-            if pose.dim() == 1:
-                pose = pose.unsqueeze(0)
+            pose_np = np.asarray(poses_isaac, dtype=np.float32)
+            if pose_np.ndim == 1 and pose_np.shape[0] == 7:
+                pose_np = pose_np.reshape(1, 7)
+            if pose_np.ndim == 0:
+                raise ValueError(f"poses_isaac must be (N,7) or (7,), got scalar {pose_np}")
+            if pose_np.ndim != 2 or pose_np.shape[1] != 7:
+                raise ValueError(f"poses_isaac must be (N,7) or (7,), got shape {pose_np.shape}")
+            pose = torch.as_tensor(pose_np, dtype=torch.float32, device=self.device)
             N = pose.shape[0]
 
             intr_vals = self._resolve_intrinsics(None)
@@ -285,8 +290,18 @@ class GSVisibilityEngine:
                     unocc = unocc[0]
                 unocc = (unocc > thr).float()
 
+                # If the full mask touches the image border, treat as out-of-view
+                if (
+                    (unocc[0, :].any())
+                    or (unocc[-1, :].any())
+                    or (unocc[:, 0].any())
+                    or (unocc[:, -1].any())
+                ):
+                    ratios[i] = 0.0
+                    continue
+
                 A_full = float(unocc.sum().item())
-                A_vis  = float(occ.sum().item())
+                A_vis = float(occ.sum().item())
                 ratio = 0.0 if A_full <= 0 else (A_vis / (A_full + 1e-6))
                 ratios[i] = float(max(0.0, min(1.0, ratio)))
 

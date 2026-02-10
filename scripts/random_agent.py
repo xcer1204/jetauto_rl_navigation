@@ -64,8 +64,8 @@ def main():
             # apply actions
             env.step(actions)
         step += 1
-        if step < 20 or step % 50 == 0:
-            print(f"[STEP] {step}")
+        # if step < 20 or step % 50 == 0:
+        #     print(f"[STEP] {step}")
 
     # close the simulator
     env.close()
