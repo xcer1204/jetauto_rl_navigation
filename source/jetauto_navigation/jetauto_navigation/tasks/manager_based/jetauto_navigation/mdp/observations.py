@@ -181,6 +181,24 @@ class gs_image_feature(ManagerTermBase):
         if self.save_debug_images:
             self.save_dir.mkdir(parents=True, exist_ok=True)
 
+        # Optional debug mask dump from external renderer.
+        self.save_debug_masks = bool(cfg.params.get("save_debug_masks", False))
+        self.save_mask_every_n_steps = max(1, int(cfg.params.get("save_mask_every_n_steps", 1)))
+        self.save_mask_max_images = int(cfg.params.get("save_mask_max_images", -1))
+        self.save_mask_env_index = int(cfg.params.get("save_mask_env_index", self.save_env_index))
+        self.mask_occluded_dir = Path(cfg.params.get("mask_occluded_dir", "logs/gs_mask_debug/occluded"))
+        self.mask_target_only_dir = Path(cfg.params.get("mask_target_only_dir", "logs/gs_mask_debug/target_only"))
+        self.mask_target_from_command = bool(cfg.params.get("mask_target_from_command", True))
+        self.mask_command_name = str(cfg.params.get("mask_command_name", "rgb_command"))
+        self.mask_target_default = str(cfg.params.get("mask_target_default", "red"))
+        self.mask_threshold = float(cfg.params.get("mask_threshold", 0.5))
+        self.mask_binary = bool(cfg.params.get("mask_binary", True))
+        self._saved_mask_count = 0
+        self._mask_api_warned = False
+        if self.save_debug_masks:
+            self.mask_occluded_dir.mkdir(parents=True, exist_ok=True)
+            self.mask_target_only_dir.mkdir(parents=True, exist_ok=True)
+
     def _build_encoder(self, device: str):
         try:
             import timm
@@ -211,6 +229,17 @@ class gs_image_feature(ManagerTermBase):
         save_max_images: int | None = None,
         save_env_index: int | None = None,
         save_dir: str | None = None,
+        save_debug_masks: bool | None = None,
+        save_mask_every_n_steps: int | None = None,
+        save_mask_max_images: int | None = None,
+        save_mask_env_index: int | None = None,
+        mask_occluded_dir: str | None = None,
+        mask_target_only_dir: str | None = None,
+        mask_target_from_command: bool | None = None,
+        mask_command_name: str | None = None,
+        mask_target_default: str | None = None,
+        mask_threshold: float | None = None,
+        mask_binary: bool | None = None,
     ) -> torch.Tensor:
         # Accept debug params from ObservationTermCfg to satisfy manager param validation.
         # Runtime overrides are optional and primarily for debugging.
@@ -226,6 +255,31 @@ class gs_image_feature(ManagerTermBase):
             self.save_dir = Path(save_dir)
             if self.save_debug_images:
                 self.save_dir.mkdir(parents=True, exist_ok=True)
+        if save_debug_masks is not None:
+            self.save_debug_masks = bool(save_debug_masks)
+        if save_mask_every_n_steps is not None:
+            self.save_mask_every_n_steps = max(1, int(save_mask_every_n_steps))
+        if save_mask_max_images is not None:
+            self.save_mask_max_images = int(save_mask_max_images)
+        if save_mask_env_index is not None:
+            self.save_mask_env_index = int(save_mask_env_index)
+        if mask_occluded_dir is not None and str(self.mask_occluded_dir) != str(mask_occluded_dir):
+            self.mask_occluded_dir = Path(mask_occluded_dir)
+        if mask_target_only_dir is not None and str(self.mask_target_only_dir) != str(mask_target_only_dir):
+            self.mask_target_only_dir = Path(mask_target_only_dir)
+        if self.save_debug_masks:
+            self.mask_occluded_dir.mkdir(parents=True, exist_ok=True)
+            self.mask_target_only_dir.mkdir(parents=True, exist_ok=True)
+        if mask_target_from_command is not None:
+            self.mask_target_from_command = bool(mask_target_from_command)
+        if mask_command_name is not None:
+            self.mask_command_name = str(mask_command_name)
+        if mask_target_default is not None:
+            self.mask_target_default = str(mask_target_default)
+        if mask_threshold is not None:
+            self.mask_threshold = float(mask_threshold)
+        if mask_binary is not None:
+            self.mask_binary = bool(mask_binary)
 
         robot: Articulation = env.scene[asset_cfg.name]
         pos_r = robot.data.root_pos_w - env.scene.env_origins
@@ -252,6 +306,7 @@ class gs_image_feature(ManagerTermBase):
         self.conn.root.render(cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
         images_np = self.image_server.get_data()
         self._maybe_save_debug_image(images_np)
+        self._maybe_save_debug_masks(env, cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
         images = torch.tensor(images_np, dtype=torch.float32, device=env.device).reshape(env.num_envs, 3, 180, 320)
         images = images / 255.0
         images = self.preprocess(images)
@@ -281,4 +336,87 @@ class gs_image_feature(ManagerTermBase):
             self._saved_count += 1
         except Exception:
             # Keep training running even if image dump fails.
+            return
+
+    @staticmethod
+    def _command_to_target(command_row: torch.Tensor, default_target: str = "red") -> str:
+        if command_row.numel() < 3:
+            return default_target
+        target_idx = int(torch.argmax(command_row[:3]).item())
+        return ["red", "green", "blue"][target_idx]
+
+    def _maybe_save_debug_masks(
+        self,
+        env: ManagerBasedRLEnv,
+        cam_pos_w: torch.Tensor,
+        cam_quat_ros: torch.Tensor,
+        red_pos: torch.Tensor,
+        green_pos: torch.Tensor,
+        blue_pos: torch.Tensor,
+    ):
+        if not self.save_debug_masks:
+            return
+        if self.save_mask_max_images >= 0 and self._saved_mask_count >= self.save_mask_max_images:
+            return
+        if self._obs_step % self.save_mask_every_n_steps != 0:
+            return
+
+        env_idx = min(max(self.save_mask_env_index, 0), cam_pos_w.shape[0] - 1)
+        target_name = self.mask_target_default
+        if self.mask_target_from_command:
+            try:
+                command = env.command_manager.get_command(self.mask_command_name)
+                target_name = self._command_to_target(command[env_idx], self.mask_target_default)
+            except Exception:
+                target_name = self.mask_target_default
+
+        try:
+            cam_pos_1 = cam_pos_w[env_idx : env_idx + 1]
+            cam_quat_1 = cam_quat_ros[env_idx : env_idx + 1]
+            red_pos_1 = red_pos[env_idx : env_idx + 1]
+            green_pos_1 = green_pos[env_idx : env_idx + 1]
+            blue_pos_1 = blue_pos[env_idx : env_idx + 1]
+
+            mask_occ = self.conn.root.render_mask(
+                cam_pos_1,
+                cam_quat_1,
+                red_pos_1,
+                green_pos_1,
+                blue_pos_1,
+                target=target_name,
+                threshold=self.mask_threshold,
+                binary=self.mask_binary,
+                send_to_socket=False,
+                occlusion_mode="full_scene",
+            )
+            mask_target_only = self.conn.root.render_mask(
+                cam_pos_1,
+                cam_quat_1,
+                red_pos_1,
+                green_pos_1,
+                blue_pos_1,
+                target=target_name,
+                threshold=self.mask_threshold,
+                binary=self.mask_binary,
+                send_to_socket=False,
+                occlusion_mode="target_only",
+            )
+
+            mask_occ_img = np.asarray(mask_occ, dtype=np.uint8)[0]
+            mask_target_only_img = np.asarray(mask_target_only, dtype=np.uint8)[0]
+            occ_path = self.mask_occluded_dir / f"mask_occ_env{env_idx:02d}_step{self._obs_step:06d}_{target_name}.png"
+            target_only_path = (
+                self.mask_target_only_dir / f"mask_target_only_env{env_idx:02d}_step{self._obs_step:06d}_{target_name}.png"
+            )
+            Image.fromarray(mask_occ_img, mode="L").save(occ_path)
+            Image.fromarray(mask_target_only_img, mode="L").save(target_only_path)
+            self._saved_mask_count += 1
+        except Exception as exc:
+            if not self._mask_api_warned:
+                print(
+                    "[gs_image_feature] mask dump failed once. "
+                    f"error={exc}. Please run render_server_with_mask.py."
+                )
+                self._mask_api_warned = True
+            # Keep training running even if mask dump fails.
             return
