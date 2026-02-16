@@ -181,6 +181,14 @@ class gs_image_feature(ManagerTermBase):
         if self.save_debug_images:
             self.save_dir.mkdir(parents=True, exist_ok=True)
 
+
+        # Visibility ratio (for reward).
+        self.compute_visibility_ratio = bool(cfg.params.get("compute_visibility_ratio", True))
+        self.visibility_ratio_threshold = float(cfg.params.get("mask_threshold", 0.5))
+        self.visibility_ratio_binary = bool(cfg.params.get("mask_binary", True))
+
+
+
         # Optional debug mask dump from external renderer.
         self.save_debug_masks = bool(cfg.params.get("save_debug_masks", False))
         self.save_mask_every_n_steps = max(1, int(cfg.params.get("save_mask_every_n_steps", 1)))
@@ -241,6 +249,7 @@ class gs_image_feature(ManagerTermBase):
         mask_threshold: float | None = None,
         mask_binary: bool | None = None,
     ) -> torch.Tensor:
+        print(f"[gs_image_feature] called, step={env.common_step_counter}")
         # Accept debug params from ObservationTermCfg to satisfy manager param validation.
         # Runtime overrides are optional and primarily for debugging.
         if save_debug_images is not None:
@@ -304,6 +313,46 @@ class gs_image_feature(ManagerTermBase):
         blue_pos = blue.data.object_pos_w[:, 0, :] - env.scene.env_origins - offset
 
         self.conn.root.render(cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
+
+
+        # --- visibility ratio for reward (no mask dumping) ---
+        if self.compute_visibility_ratio:
+            try:
+                # returns np.ndarray (N,) float32
+                vis_ratio_np = self.conn.root.render_visibility_ratio(
+                    cam_pos_w,
+                    cam_quat_ros,
+                    red_pos,
+                    green_pos,
+                    blue_pos,
+                    target="red",
+                    threshold=self.mask_threshold,
+                    binary=self.mask_binary,
+                    eps=1e-6,
+                    clamp=True,
+                )
+                # env.extras["vis_ratio"] = torch.tensor(vis_ratio_np, device=env.device, dtype=torch.float32)
+                vis_ratio_np = np.asarray(vis_ratio_np, dtype=np.float32).reshape(env.num_envs)
+                env.extras["vis_ratio"] = torch.from_numpy(vis_ratio_np).to(env.device)
+
+                # if env.common_step_counter % 2 == 0:   # 每20步打印一次，别每步都刷
+                #     print(
+                #         f"[VIS] step={env.common_step_counter} "
+                #         f"mean={env.extras['vis_ratio'].mean().item():.3f} "
+                #         f"min={env.extras['vis_ratio'].min().item():.3f} "
+                #         f"max={env.extras['vis_ratio'].max().item():.3f}"
+                #     )
+                print(
+                    f"[VIS] step={env.common_step_counter} "
+                    f"mean={env.extras['vis_ratio'].mean().item():.3f} "
+                    f"min={env.extras['vis_ratio'].min().item():.3f} "
+                    f"max={env.extras['vis_ratio'].max().item():.3f}"
+                )
+
+            except Exception as exc:
+                print(f"[VIS] render_visibility_ratio RPC failed: {exc}")
+                env.extras["vis_ratio"] = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+
         images_np = self.image_server.get_data()
         self._maybe_save_debug_image(images_np)
         self._maybe_save_debug_masks(env, cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)

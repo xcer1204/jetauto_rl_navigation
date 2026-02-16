@@ -174,7 +174,7 @@ class ActionsCfg:
         lin_xy_scale=(0.6, 0.6),
         yaw_scale=1.5,
         smoothing=0.2,
-        z_lock=0.01,
+        z_lock=None,
     )
 
 
@@ -185,11 +185,11 @@ class ObservationsCfg:
         gs_image = ObsTerm(
             func=mdp.gs_image_feature,
             params={
-                "camera_pos": [0.0, -0.1, 0.0],
+                "camera_pos": [0.0, -0.1, 0.2],
                 "camera_rot": [0.0, 23.0, 0.0],
                 "asset_offset_pos": list(ASSET_OFFSET),
                 "save_debug_images": True,
-                "save_every_n_steps": 10,
+                "save_every_n_steps": 1,
                 "save_max_images": 100,
                 "save_env_index": 0,
                 "save_dir": "logs/gs_render_debug",
@@ -292,12 +292,12 @@ class EventCfg:
             "green_cfg": SceneEntityCfg("cone_green"),
             "blue_cfg": SceneEntityCfg("cone_blue"),
             # Match VR-Robo reset_base ranges.
-            "robot_x_range": (0.4, 0.6),
-            "robot_y_range": (-1.5, 0.5),
+            "robot_x_range": (2.0, 2.0),
+            "robot_y_range": (-3.0, -3.0),
             # Match VR-Robo reset_cones ranges, including elevated table region (z=0.3456).
             "cone_pose_ranges": {
-                "x": [(0.1, 3.0), (0.1, 3.0), (2.15, 3.0)],
-                "y": [(0.2, 1.3), (-3.0, -1.9), (-1.05, -0.2)],
+                "x": [(2.0, 2.0), (3.0, 3.0), (2.5, 2.5)],
+                "y": [(0.2, 0.2), (-2.5, -2.5), (-0.2, -0.2)],
                 "z": [(0.0, 0.0), (0.0, 0.0), (0.3456, 0.3456)],
             },
             "z_lock": 0.01,
@@ -324,6 +324,10 @@ class RewardsCfg:
     )
     action_penalty = RewTerm(func=mdp.action_l2, weight=-0.02)
 
+    visibility = RewTerm(
+        func=mdp.target_visibility_reward,
+        weight=2.0,   # 你可以调这个
+    )
 
 @configclass
 class TerminationsCfg:
@@ -347,7 +351,7 @@ class JetautoVrRoboEnvCfg(ManagerBasedRLEnvCfg):
         self.episode_length_s = 15.0
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
-        self.viewer.eye = (6.5, -2.0, 3.2)
+        self.viewer.eye = (0.5, 0.0, 8.2)
         self.viewer.lookat = (1.2, -0.8, 0.2)
 
 

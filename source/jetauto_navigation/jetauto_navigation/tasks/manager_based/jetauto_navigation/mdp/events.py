@@ -39,7 +39,8 @@ def randomize_robot_and_cones(
     root_state[:, 1] = env_origins[:, 1] + torch.empty(len(env_ids), device=env.device).uniform_(*robot_y_range)
     root_state[:, 2] = env_origins[:, 2] + z_lock
 
-    yaw = torch.empty(len(env_ids), device=env.device).uniform_(-math.pi, math.pi)
+    # yaw = torch.empty(len(env_ids), device=env.device).uniform_(-math.pi, math.pi)
+    yaw = torch.ones(len(env_ids), device=env.device) * 1.57
     zeros = torch.zeros_like(yaw)
     root_state[:, 3:7] = math_utils.quat_from_euler_xyz(zeros, zeros, yaw)
     root_state[:, 7:] = 0.0
@@ -118,7 +119,8 @@ def _randomize_cones_with_region_permutation(
     # assign slot order to (red, green, blue) separately per env
     rgb_pos = torch.zeros(num_envs, 3, 3, device=device)
     for i in range(num_envs):
-        perm = torch.randperm(3, device=device)
+        # perm = torch.randperm(3, device=device)
+        perm = torch.tensor([0, 1, 2], device=device)
         rgb_pos[i, 0] = slot_pos[i, perm[0]]  # red
         rgb_pos[i, 1] = slot_pos[i, perm[1]]  # green
         rgb_pos[i, 2] = slot_pos[i, perm[2]]  # blue

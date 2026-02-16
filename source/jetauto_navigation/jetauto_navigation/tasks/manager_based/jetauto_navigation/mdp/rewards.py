@@ -91,3 +91,13 @@ def goal_reach_bonus(
 
     dist_xy = torch.norm(goal_pos[:, :2] - robot_pos[:, :2], dim=1)
     return (dist_xy <= threshold).float()
+
+def target_visibility_reward(
+    env: ManagerBasedRLEnv,
+    scale: float = 1.0,
+) -> torch.Tensor:
+    """Reward proportional to target visibility ratio in [0,1]."""
+    vis = env.extras.get("vis_ratio", None)
+    if vis is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    return scale * vis
