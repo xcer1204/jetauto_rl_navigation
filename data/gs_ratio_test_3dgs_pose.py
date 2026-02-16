@@ -9,7 +9,7 @@ import torch
 import torchvision
 import sys
 # Make SAGA code importable
-SAGA_ROOT = "/home/zgao/SegAnyGAussians"
+SAGA_ROOT = "/home/ubuntu/xc_isaac/SegAnyGAussians"
 if SAGA_ROOT not in sys.path:
     sys.path.append(SAGA_ROOT)
     
@@ -312,11 +312,11 @@ def isaac_pose_to_world_pos_rot(pos_isaac: Union[list, np.ndarray, torch.Tensor]
 @torch.no_grad()
 def main():
 
-    model_path = "/home/zgao/video_data_process/results_corridor/3dgs_output"
-    source_path = "/home/zgao/video_data_process/results_corridor/colmap_data_undistorted"
+    model_path = "/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output"
+    source_path = "/home/ubuntu/xc_isaac/video_data_process/results_corridor/colmap_data_undistorted"
     iteration = 30000
-    ply_path = "/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/scene_point_cloud.ply"
-    precomputed_mask_path = "/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt"
+    ply_path = "/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/scene_point_cloud.ply"
+    precomputed_mask_path = "/home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt"
     device = "cuda"
     # in isaaclab actually used intrinsics
     intr = {

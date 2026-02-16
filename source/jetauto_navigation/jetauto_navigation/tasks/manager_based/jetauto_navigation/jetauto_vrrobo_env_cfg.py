@@ -19,7 +19,7 @@ from jetauto_navigation.robots.jetauto import JETAUTO_CONFIG
 
 from . import mdp
 
-VRROBO_SCENE_DATA_ROOT = "/home/zgao/VR-Robo/vrrobo_isaaclab/exts/scene_data"
+VRROBO_SCENE_DATA_ROOT = "/home/ubuntu/xc_isaac/VR-Robo/vrrobo_isaaclab/exts/scene_data"
 ASSET_OFFSET = (3.2, 0.0, -0.01)
 
 
@@ -199,7 +199,7 @@ class ObservationsCfg:
                 "save_mask_env_index": 0,
                 "mask_occluded_dir": "logs/gs_mask_debug/occluded",
                 "mask_target_only_dir": "logs/gs_mask_debug/target_only",
-                "mask_target_from_command": True,
+                "mask_target_from_command": False,
                 "mask_command_name": "rgb_command",
                 "mask_target_default": "red",
                 "mask_threshold": 0.5,
