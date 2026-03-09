@@ -114,7 +114,7 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
         c = self.cfg.env_params.camera
 
-        # Real->sim alignment (measured from box alignment results)
+        # Real->sim alignment (measured from box alignment results)y
         self._align_scale = self.ALIGN_SCALE
         self._align_rot_xyzw = torch.tensor(self.ALIGN_ROT_XYZW, device=self.device)
         self._align_translation = torch.tensor(self.ALIGN_TRANSLATION, device=self.device)

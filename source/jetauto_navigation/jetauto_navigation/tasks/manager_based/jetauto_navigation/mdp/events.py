@@ -18,6 +18,7 @@ def randomize_robot_and_cones(
     blue_cfg: SceneEntityCfg = SceneEntityCfg("cone_blue"),
     robot_x_range: tuple[float, float] = (0.4, 0.6),
     robot_y_range: tuple[float, float] = (-1.5, 0.5),
+    robot_yaw_range: tuple[float, float] = (-math.pi, math.pi),
     red_x_range: tuple[float, float] = (1.8, 2.8),
     red_y_range: tuple[float, float] = (1.0, 1.6),
     green_x_range: tuple[float, float] = (1.8, 2.8),
@@ -40,7 +41,10 @@ def randomize_robot_and_cones(
     root_state[:, 2] = env_origins[:, 2] + z_lock
 
     # yaw = torch.empty(len(env_ids), device=env.device).uniform_(-math.pi, math.pi)
-    yaw = torch.ones(len(env_ids), device=env.device) * 1.57
+    # yaw = torch.ones(len(env_ids), device=env.device) * 1.57
+    # yaw = torch.ones(len(env_ids), device=env.device) * (math.pi / 2)
+    yaw = torch.empty(len(env_ids), device=env.device).uniform_(*robot_yaw_range)
+
     zeros = torch.zeros_like(yaw)
     root_state[:, 3:7] = math_utils.quat_from_euler_xyz(zeros, zeros, yaw)
     root_state[:, 7:] = 0.0

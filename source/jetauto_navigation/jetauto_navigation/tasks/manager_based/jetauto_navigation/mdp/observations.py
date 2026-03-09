@@ -157,6 +157,12 @@ class gs_image_feature(ManagerTermBase):
 
         self.encoder_model, self.output_dim, mean, std = self._build_encoder(env.device)
         self.encoder_model.eval()
+        self.history_len = max(1, int(cfg.params.get("history_len", 4)))
+        self.feature_history = torch.zeros(
+            (env.num_envs, self.history_len, self.output_dim),
+            device=env.device,
+            dtype=torch.float32,
+        )
 
         self.preprocess = T.Compose(
             [
@@ -224,6 +230,11 @@ class gs_image_feature(ManagerTermBase):
 
     def reset(self, env_ids: torch.Tensor | None = None):
         self.image_server.reset(env_ids)
+        if env_ids is None:
+            self.feature_history.zero_()
+            return
+        self.feature_history[env_ids] = 0.0
+
 
     def __call__(
         self,
@@ -249,7 +260,7 @@ class gs_image_feature(ManagerTermBase):
         mask_threshold: float | None = None,
         mask_binary: bool | None = None,
     ) -> torch.Tensor:
-        print(f"[gs_image_feature] called, step={env.common_step_counter}")
+        # print(f"[gs_image_feature] called, step={env.common_step_counter}")
         # Accept debug params from ObservationTermCfg to satisfy manager param validation.
         # Runtime overrides are optional and primarily for debugging.
         if save_debug_images is not None:
@@ -312,6 +323,26 @@ class gs_image_feature(ManagerTermBase):
         green_pos = green.data.object_pos_w[:, 0, :] - env.scene.env_origins - offset
         blue_pos = blue.data.object_pos_w[:, 0, :] - env.scene.env_origins - offset
 
+
+
+
+        def _strip_names(t: torch.Tensor) -> torch.Tensor:
+            # drop named-tensor metadata (cheap)
+            if isinstance(t, torch.Tensor) and getattr(t, "names", None) is not None:
+                # names is a tuple; any non-None means it's named
+                if any(n is not None for n in t.names):
+                    t = t.rename(None)
+            return t
+
+        cam_pos_w   = _strip_names(cam_pos_w)
+        cam_quat_ros = _strip_names(cam_quat_ros)
+        red_pos     = _strip_names(red_pos)
+        green_pos   = _strip_names(green_pos)
+        blue_pos    = _strip_names(blue_pos)
+
+
+
+
         self.conn.root.render(cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
 
 
@@ -342,12 +373,13 @@ class gs_image_feature(ManagerTermBase):
                 #         f"min={env.extras['vis_ratio'].min().item():.3f} "
                 #         f"max={env.extras['vis_ratio'].max().item():.3f}"
                 #     )
-                print(
-                    f"[VIS] step={env.common_step_counter} "
-                    f"mean={env.extras['vis_ratio'].mean().item():.3f} "
-                    f"min={env.extras['vis_ratio'].min().item():.3f} "
-                    f"max={env.extras['vis_ratio'].max().item():.3f}"
-                )
+
+                # print(
+                #     f"[VIS] step={env.common_step_counter} "
+                #     f"mean={env.extras['vis_ratio'].mean().item():.3f} "
+                #     f"min={env.extras['vis_ratio'].min().item():.3f} "
+                #     f"max={env.extras['vis_ratio'].max().item():.3f}"
+                # )
 
             except Exception as exc:
                 print(f"[VIS] render_visibility_ratio RPC failed: {exc}")
@@ -364,7 +396,14 @@ class gs_image_feature(ManagerTermBase):
             features = self.encoder_model(images)
             if features.dim() > 2:
                 features = features.view(features.shape[0], -1)
-        return features
+            reset_mask = env.episode_length_buf == 0
+        if reset_mask.any():
+            self.feature_history[reset_mask] = features[reset_mask].unsqueeze(1).repeat(1, self.history_len, 1)
+
+        self.feature_history = torch.roll(self.feature_history, shifts=-1, dims=1)
+        self.feature_history[:, -1, :] = features
+        return self.feature_history.reshape(env.num_envs, self.history_len * self.output_dim)
+        # return features
 
     def _maybe_save_debug_image(self, images_np: np.ndarray):
         self._obs_step += 1

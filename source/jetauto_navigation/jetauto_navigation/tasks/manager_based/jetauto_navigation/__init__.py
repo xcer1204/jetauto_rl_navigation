@@ -46,6 +46,28 @@ gym.register(
 )
 
 gym.register(
+    id="Jetauto-VRRobo-Manager-Custom3DGS-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_custom3dgs_env_cfg:JetautoVrRoboCustom3DGSEnvCfg",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-Custom3DGS-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_custom3dgs_env_cfg:JetautoVrRoboCustom3DGSEnvCfg_PLAY",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+    },
+)
+
+gym.register(
     id="Jetauto-VRRobo-Manager-IsaacRGB-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
