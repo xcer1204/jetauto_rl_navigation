@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import random
 import time
 from datetime import datetime
+from typing import Any
 
 from isaaclab.app import AppLauncher
 
@@ -88,7 +90,17 @@ if version.parse(skrl.__version__) < version.parse(SKRL_MIN_VERSION):
     )
 
 if args_cli.ml_framework.startswith("torch"):
+    from skrl.agents.torch.ppo import PPO_RNN
+    from skrl.memories.torch import RandomMemory
+    from skrl.resources.preprocessors.torch import RunningStandardScaler
+    from skrl.resources.schedulers.torch import KLAdaptiveLR
+    from skrl.trainers.torch import SequentialTrainer
     from skrl.utils.runner.torch import Runner
+
+    from jetauto_navigation.tasks.manager_based.jetauto_navigation.agents.skrl_lstm_models import (
+        LSTMDeterministicValue,
+        LSTMGaussianPolicy,
+    )
 else:
     from skrl.utils.runner.jax import Runner
 
@@ -101,6 +113,140 @@ def _resolve_algorithm_name(agent_cfg_key: str) -> str:
     if agent_cfg_key.startswith("skrl_"):
         agent_cfg_key = agent_cfg_key.removeprefix("skrl_")
     return agent_cfg_key.lower()
+
+
+def _reward_shaper_function(scale: float):
+    def _reward_shaper(rewards, *_, **__):
+        return rewards * scale
+
+    return _reward_shaper
+
+
+def _resolve_torch_component(name: Any) -> Any:
+    if not isinstance(name, str):
+        return name
+    mapping = {
+        "KLAdaptiveLR": KLAdaptiveLR,
+        "RunningStandardScaler": RunningStandardScaler,
+    }
+    return mapping.get(name, name)
+
+
+def _extract_layers(model_cfg: dict[str, Any], key: str, default: list[int] | None = None) -> list[int]:
+    if default is None:
+        default = []
+    layers = model_cfg.get(key)
+    if isinstance(layers, (list, tuple)):
+        return [int(v) for v in layers]
+    network_cfg = model_cfg.get("network")
+    if isinstance(network_cfg, list) and network_cfg and isinstance(network_cfg[0], dict):
+        net_layers = network_cfg[0].get("layers")
+        if isinstance(net_layers, (list, tuple)):
+            return [int(v) for v in net_layers]
+    return [int(v) for v in default]
+
+
+def _build_ppo_rnn_models(env, models_cfg: dict[str, Any]) -> dict[str, Any]:
+    policy_cfg = copy.deepcopy(models_cfg.get("policy", {}))
+    value_cfg = copy.deepcopy(models_cfg.get("value", {}))
+
+    policy_class = str(policy_cfg.pop("class", "LSTMGaussianPolicy"))
+    value_class = str(value_cfg.pop("class", "LSTMDeterministicValue"))
+    if policy_class != "LSTMGaussianPolicy":
+        raise ValueError(f"Unsupported LSTM policy class: {policy_class}")
+    if value_class != "LSTMDeterministicValue":
+        raise ValueError(f"Unsupported LSTM value class: {value_class}")
+
+    policy = LSTMGaussianPolicy(
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device,
+        num_envs=env.num_envs,
+        clip_actions=bool(policy_cfg.get("clip_actions", False)),
+        clip_log_std=bool(policy_cfg.get("clip_log_std", True)),
+        min_log_std=float(policy_cfg.get("min_log_std", -20.0)),
+        max_log_std=float(policy_cfg.get("max_log_std", 2.0)),
+        initial_log_std=float(policy_cfg.get("initial_log_std", 0.0)),
+        encoder_layers=_extract_layers(policy_cfg, "encoder_layers"),
+        rnn_hidden_size=int(policy_cfg.get("rnn_hidden_size", 256)),
+        rnn_num_layers=int(policy_cfg.get("rnn_num_layers", 1)),
+        sequence_length=int(policy_cfg.get("sequence_length", 1)),
+        head_layers=_extract_layers(policy_cfg, "head_layers", default=[256, 128]),
+        activation=str(policy_cfg.get("activation", policy_cfg.get("activations", "elu"))),
+    )
+    value = LSTMDeterministicValue(
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device,
+        num_envs=env.num_envs,
+        clip_actions=bool(value_cfg.get("clip_actions", False)),
+        encoder_layers=_extract_layers(value_cfg, "encoder_layers"),
+        rnn_hidden_size=int(value_cfg.get("rnn_hidden_size", 256)),
+        rnn_num_layers=int(value_cfg.get("rnn_num_layers", 1)),
+        sequence_length=int(value_cfg.get("sequence_length", 1)),
+        head_layers=_extract_layers(value_cfg, "head_layers", default=[256, 128]),
+        activation=str(value_cfg.get("activation", value_cfg.get("activations", "elu"))),
+    )
+    return {"policy": policy, "value": value}
+
+
+def _build_ppo_rnn_agent_cfg(raw_cfg: dict[str, Any], observation_space, device) -> dict[str, Any]:
+    cfg = copy.deepcopy(raw_cfg)
+    cfg.pop("class", None)
+
+    cfg["learning_rate_scheduler"] = _resolve_torch_component(cfg.get("learning_rate_scheduler"))
+    cfg["state_preprocessor"] = _resolve_torch_component(cfg.get("state_preprocessor"))
+    cfg["value_preprocessor"] = _resolve_torch_component(cfg.get("value_preprocessor"))
+
+    for key in ("learning_rate_scheduler_kwargs", "state_preprocessor_kwargs", "value_preprocessor_kwargs"):
+        cfg[key] = {} if cfg.get(key) is None else dict(cfg[key])
+
+    if "rewards_shaper_scale" in cfg:
+        cfg["rewards_shaper"] = _reward_shaper_function(float(cfg["rewards_shaper_scale"]))
+
+    if cfg.get("state_preprocessor") is not None:
+        cfg["state_preprocessor_kwargs"].update({"size": observation_space, "device": device})
+    if cfg.get("value_preprocessor") is not None:
+        cfg["value_preprocessor_kwargs"].update({"size": 1, "device": device})
+
+    return cfg
+
+
+def _run_ppo_rnn_training(env, agent_cfg: dict[str, Any], resume_path: str | None):
+    if not args_cli.ml_framework.startswith("torch"):
+        raise RuntimeError("PPO_RNN training in train_gs.py currently supports only the torch backend.")
+
+    models = _build_ppo_rnn_models(env, agent_cfg.get("models", {}))
+
+    raw_agent_cfg = agent_cfg.get("agent", {})
+    rollouts = int(raw_agent_cfg.get("rollouts", 16))
+    memory_cfg = copy.deepcopy(agent_cfg.get("memory", {}))
+    memory_class = str(memory_cfg.pop("class", "RandomMemory")).lower()
+    if memory_class != "randommemory":
+        raise ValueError(f"Unsupported memory class for PPO_RNN: {memory_class}")
+    memory_size = int(memory_cfg.pop("memory_size", -1))
+    if memory_size < 0:
+        memory_size = rollouts
+    memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=env.device, **memory_cfg)
+
+    ppo_rnn_cfg = _build_ppo_rnn_agent_cfg(raw_agent_cfg, env.observation_space, env.device)
+    agent = PPO_RNN(
+        models=models,
+        memory=memory,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device,
+        cfg=ppo_rnn_cfg,
+    )
+
+    trainer_cfg = copy.deepcopy(agent_cfg.get("trainer", {}))
+    trainer_cfg.pop("class", None)
+    trainer = SequentialTrainer(env=env, agents=agent, cfg=trainer_cfg)
+
+    if resume_path:
+        print(f"[INFO] Loading model checkpoint from: {resume_path}")
+        agent.load(resume_path)
+    trainer.train()
 
 
 def main():
@@ -168,11 +314,15 @@ def main():
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
 
     start_time = time.time()
-    runner = Runner(env, agent_cfg)
-    if resume_path:
-        print(f"[INFO] Loading model checkpoint from: {resume_path}")
-        runner.agent.load(resume_path)
-    runner.run()
+    agent_class = str(agent_cfg.get("agent", {}).get("class", "")).lower()
+    if agent_class == "ppo_rnn":
+        _run_ppo_rnn_training(env, agent_cfg, resume_path)
+    else:
+        runner = Runner(env, agent_cfg)
+        if resume_path:
+            print(f"[INFO] Loading model checkpoint from: {resume_path}")
+            runner.agent.load(resume_path)
+        runner.run()
 
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")
     env.close()

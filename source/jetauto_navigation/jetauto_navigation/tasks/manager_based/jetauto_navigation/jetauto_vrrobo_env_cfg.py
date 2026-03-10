@@ -19,7 +19,7 @@ from jetauto_navigation.robots.jetauto import JETAUTO_CONFIG
 
 from . import mdp
 
-VRROBO_SCENE_DATA_ROOT = "/home/ubuntu/xc_isaac/VR-Robo/vrrobo_isaaclab/exts/scene_data"
+VRROBO_SCENE_DATA_ROOT = "/home/zgao/VR-Robo/vrrobo_isaaclab/exts/scene_data"
 ASSET_OFFSET = (3.2, 0.0, -0.01)
 
 
@@ -214,7 +214,7 @@ class ObservationsCfg:
                 "camera_pos": [0.0, -0.1, 0.2],
                 "camera_rot": [0.0, 23.0, 0.0],
                 "asset_offset_pos": list(ASSET_OFFSET),
-                "save_debug_images": True,
+                "save_debug_images": False,
                 "save_every_n_steps": 1,
                 "save_max_images": 100,
                 "save_env_index": 0,
@@ -234,7 +234,6 @@ class ObservationsCfg:
             noise=None,
         )
         # goal_command = ObsTerm(func=mdp.rgb_command, params={"command_name": "rgb_command"})
-        actions = ObsTerm(func=mdp.last_action)
         # base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         # base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         # projected_gravity = ObsTerm(func=mdp.projected_gravity)
@@ -249,7 +248,6 @@ class ObservationsCfg:
         # goal_pos = ObsTerm(func=mdp.goal_pos_multi, params={"base_height": 0.0})
         robot_pos = ObsTerm(func=mdp.root_pos_e)
         robot_quat = ObsTerm(func=mdp.root_quat_w)
-        actions = ObsTerm(func=mdp.last_action)
         # base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         # base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         # projected_gravity = ObsTerm(func=mdp.projected_gravity)

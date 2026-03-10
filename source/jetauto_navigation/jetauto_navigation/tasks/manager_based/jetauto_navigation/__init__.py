@@ -31,6 +31,7 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboEnvCfg",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )
 
@@ -42,6 +43,7 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboEnvCfg_PLAY",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )
 
@@ -53,6 +55,7 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_custom3dgs_env_cfg:JetautoVrRoboCustom3DGSEnvCfg",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )
 
@@ -64,6 +67,7 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_custom3dgs_env_cfg:JetautoVrRoboCustom3DGSEnvCfg_PLAY",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )
 
@@ -75,6 +79,7 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboIsaacRgbEnvCfg",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )
 
@@ -86,5 +91,6 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboIsaacRgbEnvCfg_PLAY",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )

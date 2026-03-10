@@ -17,7 +17,7 @@ import torch
 import torchvision
 
 # Make SAGA code importable
-SAGA_ROOT = "/home/ubuntu/xc_isaac/SegAnyGAussians"
+SAGA_ROOT = "/home/zgao/SegAnyGAussians"
 if SAGA_ROOT not in sys.path:
     sys.path.append(SAGA_ROOT)
 
@@ -90,7 +90,7 @@ def main():
     parser.add_argument(
         "--precomputed_mask",
         type=str,
-        default="/home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
+        default="/home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt",
         help="Bool tensor (N,) marking target Gaussians.",
     )
     parser.add_argument(
@@ -102,11 +102,11 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/ubuntu/xc_isaac/jetauto_rl_navigation/data/mask_renders",
+        default="/home/zgao/jetauto_rl_navigation/data/mask_renders",
     )
     parser.set_defaults(
-        model_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output",
-        source_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/colmap_data_undistorted",
+        model_path="/home/zgao/video_data_process/results_corridor/3dgs_output",
+        source_path="/home/zgao/video_data_process/results_corridor/colmap_data_undistorted",
     )
     args = get_combined_args(parser)
 

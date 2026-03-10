@@ -8,11 +8,11 @@
 ## 运行示例
 ```bash
 conda run -n sags_py310 python render_custom_view_masks.py \
-  -m /home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output \
+  -m /home/zgao/video_data_process/results_corridor/3dgs_output \
   --iteration 30000 \
-  --precomputed_mask /home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt \
+  --precomputed_mask /home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt \
   --camera_json /path/to/cam.json \
-  --output_dir /home/ubuntu/xc_isaac/jetauto_rl_navigation/data/mask_renders_custom
+  --output_dir /home/zgao/jetauto_rl_navigation/data/mask_renders_custom
 ```
 
 `cam.json` 内容示例（需自行填写数值）：
@@ -43,8 +43,8 @@ conda run -n sags_py310 python render_custom_view_masks.py \
 - `visibility_ratio.txt`：记录 `A_full`、`A_visible`、`visible_ratio` 以及掩码路径。
 
 ## 关键输入
-- 3DGS 模型目录：`-m /home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output`
-- 3D 目标掩码（bool tensor, shape N）：`--precomputed_mask /home/ubuntu/xc_isaac/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt`
+- 3DGS 模型目录：`-m /home/zgao/video_data_process/results_corridor/3dgs_output`
+- 3D 目标掩码（bool tensor, shape N）：`--precomputed_mask /home/zgao/jetauto_rl_navigation/data/blue_bin_mask_from_2d.pt`
 - 相机参数 JSON：`--camera_json /path/to/cam.json`
 
 默认输出目录：`./mask_renders`（可用 `--output_dir` 覆盖）。
