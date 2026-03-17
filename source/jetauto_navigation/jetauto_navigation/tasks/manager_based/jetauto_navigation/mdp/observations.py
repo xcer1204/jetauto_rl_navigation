@@ -18,6 +18,7 @@ import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation, RigidObjectCollection
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.managers.manager_term_cfg import ObservationTermCfg
+from .multitask_inference import DEFAULT_MULTITASK_MODEL_PATH, MultiTaskOcclusionPredictor
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -146,32 +147,51 @@ def root_pos_e(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCf
 
 
 class gs_image_feature(ManagerTermBase):
-    """RPC-based GS rendering + frozen vision encoder (VR-Robo style)."""
+    """RPC-based GS rendering with a shared DeepLab backbone for rewards and policy features."""
 
     def __init__(self, cfg: ObservationTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
+        print("[gs_image_feature] Connecting to render server on localhost:18861...")
         self.conn = rpyc.connect("localhost", 18861, config={"allow_pickle": True, "allow_public_attrs": True})
+        print("[gs_image_feature] Render server connected.")
         self.image_server = GSServer()
         self.image_server.start()
         self.image_server.init_data(env.num_envs, h=180, w=320)
+        print("[gs_image_feature] RGB socket receiver ready.")
+        print("[gs_image_feature] Initializing multitask occlusion predictor...")
+        self.occlusion_predictor = MultiTaskOcclusionPredictor(
+            model_path=str(cfg.params.get("multitask_model_path", DEFAULT_MULTITASK_MODEL_PATH)),
+            project_root=cfg.params.get("multitask_project_root"),
+            device=env.device,
+        )
+        self.occlusion_class_names = tuple(self.occlusion_predictor.occlusion_class_names)
+        self.success_occlusion_class = str(cfg.params.get("success_occlusion_class", "0-20%"))
+        self.success_occlusion_index = self.occlusion_predictor.class_index(self.success_occlusion_class)
+        print("[gs_image_feature] Multitask occlusion predictor ready.")
 
-        self.encoder_model, self.output_dim, mean, std = self._build_encoder(env.device)
-        self.encoder_model.eval()
+        print("[gs_image_feature] Reusing DeepLab backbone features for the policy observation.")
+        self.output_dim = int(self.occlusion_predictor.feature_dim)
+        print(f"[gs_image_feature] Shared backbone feature_dim={self.output_dim}")
+        # Legacy ViT/ResNet policy encoder path retained for reference.
+        # print("[gs_image_feature] Initializing policy encoder...")
+        # self.encoder_model, self.output_dim, mean, std = self._build_encoder(env.device)
+        # self.encoder_model.eval()
+        # print(f"[gs_image_feature] Policy encoder ready. output_dim={self.output_dim}")
         self.history_len = max(1, int(cfg.params.get("history_len", 4)))
         self.feature_history = torch.zeros(
             (env.num_envs, self.history_len, self.output_dim),
             device=env.device,
             dtype=torch.float32,
         )
-
-        self.preprocess = T.Compose(
-            [
-                T.Resize((224, 224)),
-                T.ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2),
-                T.RandomApply([T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0))], p=0.6),
-                T.Normalize(mean=mean, std=std),
-            ]
-        )
+        # Legacy ViT/ResNet preprocessing retained for reference.
+        # self.preprocess = T.Compose(
+        #     [
+        #         T.Resize((224, 224)),
+        #         T.ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2),
+        #         T.RandomApply([T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0))], p=0.6),
+        #         T.Normalize(mean=mean, std=std),
+        #     ]
+        # )
         self.camera_pos_noise_scale = torch.tensor([0.01, 0.01, 0.01], device=env.device)
         self.camera_rot_noise_scale = torch.tensor([1.0, 1.0, 2.0], device=env.device)
 
@@ -186,12 +206,6 @@ class gs_image_feature(ManagerTermBase):
         self.save_dir = Path(save_dir)
         if self.save_debug_images:
             self.save_dir.mkdir(parents=True, exist_ok=True)
-
-
-        # Visibility ratio (for reward).
-        self.compute_visibility_ratio = bool(cfg.params.get("compute_visibility_ratio", True))
-        self.visibility_ratio_threshold = float(cfg.params.get("mask_threshold", 0.5))
-        self.visibility_ratio_binary = bool(cfg.params.get("mask_binary", True))
 
 
 
@@ -213,20 +227,23 @@ class gs_image_feature(ManagerTermBase):
             self.mask_occluded_dir.mkdir(parents=True, exist_ok=True)
             self.mask_target_only_dir.mkdir(parents=True, exist_ok=True)
 
-    def _build_encoder(self, device: str):
-        try:
-            import timm
-
-            model = timm.create_model("vit_tiny_patch16_224", pretrained=True)
-            model.head = nn.Identity()
-            model = model.to(device)
-            return model, int(model.num_features), [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
-        except Exception:
-            from torchvision import models
-
-            model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-            model = nn.Sequential(*list(model.children())[:-1]).to(device)
-            return model, 512, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+    # Legacy ViT/ResNet encoder path retained for reference.
+    # def _build_encoder(self, device: str):
+    #     try:
+    #         import timm
+    #
+    #         print("[gs_image_feature] Loading timm vit_tiny_patch16_224 pretrained weights...")
+    #         model = timm.create_model("vit_tiny_patch16_224", pretrained=True)
+    #         model.head = nn.Identity()
+    #         model = model.to(device)
+    #         return model, int(model.num_features), [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+    #     except Exception:
+    #         from torchvision import models
+    #
+    #         print("[gs_image_feature] Falling back to torchvision resnet18 pretrained weights...")
+    #         model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+    #         model = nn.Sequential(*list(model.children())[:-1]).to(device)
+    #         return model, 512, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
 
     def reset(self, env_ids: torch.Tensor | None = None):
         self.image_server.reset(env_ids)
@@ -243,6 +260,9 @@ class gs_image_feature(ManagerTermBase):
         camera_pos: list[float] | tuple[float, float, float] = (0.25, 0.0, 0.15),
         camera_rot: list[float] | tuple[float, float, float] = (0.0, 20.0, 0.0),
         asset_offset_pos: list[float] | tuple[float, float, float] = (3.2, 0.0, -0.01),
+        multitask_model_path: str | None = None,
+        multitask_project_root: str | None = None,
+        success_occlusion_class: str | None = None,
         save_debug_images: bool | None = None,
         save_every_n_steps: int | None = None,
         save_max_images: int | None = None,
@@ -263,6 +283,16 @@ class gs_image_feature(ManagerTermBase):
         # print(f"[gs_image_feature] called, step={env.common_step_counter}")
         # Accept debug params from ObservationTermCfg to satisfy manager param validation.
         # Runtime overrides are optional and primarily for debugging.
+        # These model-related params are configured during initialization; they are accepted here
+        # to satisfy ObservationTermCfg validation and to allow a lightweight runtime override of
+        # the success bucket without reloading the model every step.
+        if multitask_model_path is not None:
+            pass
+        if multitask_project_root is not None:
+            pass
+        if success_occlusion_class is not None and success_occlusion_class != self.success_occlusion_class:
+            self.success_occlusion_class = str(success_occlusion_class)
+            self.success_occlusion_index = self.occlusion_predictor.class_index(self.success_occlusion_class)
         if save_debug_images is not None:
             self.save_debug_images = bool(save_debug_images)
         if save_every_n_steps is not None:
@@ -345,57 +375,30 @@ class gs_image_feature(ManagerTermBase):
 
         self.conn.root.render(cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
 
-
-        # --- visibility ratio for reward (no mask dumping) ---
-        if self.compute_visibility_ratio:
-            try:
-                # returns np.ndarray (N,) float32
-                vis_ratio_np = self.conn.root.render_visibility_ratio(
-                    cam_pos_w,
-                    cam_quat_ros,
-                    red_pos,
-                    green_pos,
-                    blue_pos,
-                    target="red",
-                    threshold=self.mask_threshold,
-                    binary=self.mask_binary,
-                    eps=1e-6,
-                    clamp=True,
-                )
-                # env.extras["vis_ratio"] = torch.tensor(vis_ratio_np, device=env.device, dtype=torch.float32)
-                vis_ratio_np = np.asarray(vis_ratio_np, dtype=np.float32).reshape(env.num_envs)
-                env.extras["vis_ratio"] = torch.from_numpy(vis_ratio_np).to(env.device)
-
-                # if env.common_step_counter % 2 == 0:   # 每20步打印一次，别每步都刷
-                #     print(
-                #         f"[VIS] step={env.common_step_counter} "
-                #         f"mean={env.extras['vis_ratio'].mean().item():.3f} "
-                #         f"min={env.extras['vis_ratio'].min().item():.3f} "
-                #         f"max={env.extras['vis_ratio'].max().item():.3f}"
-                #     )
-
-                # print(
-                #     f"[VIS] step={env.common_step_counter} "
-                #     f"mean={env.extras['vis_ratio'].mean().item():.3f} "
-                #     f"min={env.extras['vis_ratio'].min().item():.3f} "
-                #     f"max={env.extras['vis_ratio'].max().item():.3f}"
-                # )
-
-            except Exception as exc:
-                print(f"[VIS] render_visibility_ratio RPC failed: {exc}")
-                env.extras["vis_ratio"] = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-
         images_np = self.image_server.get_data()
         self._maybe_save_debug_image(images_np)
-        self._maybe_save_debug_masks(env, cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
-        images = torch.tensor(images_np, dtype=torch.float32, device=env.device).reshape(env.num_envs, 3, 180, 320)
-        images = images / 255.0
-        images = self.preprocess(images)
+        if self.save_debug_masks and not self._mask_api_warned:
+            print("[gs_image_feature] save_debug_masks is ignored when using the RGB-only render server.")
+            self._mask_api_warned = True
+
+        reward_images = torch.tensor(images_np, dtype=torch.float32, device=env.device).reshape(env.num_envs, 3, 180, 320)
+        reward_images = reward_images / 255.0
+        occ_indices, occ_probs, features = self.occlusion_predictor.predict_with_features(reward_images)
+        env.extras["pred_occ_class"] = occ_indices.to(env.device)
+        env.extras["pred_occ_probs"] = occ_probs.to(env.device)
+        env.extras["pred_occ_class_names"] = list(self.occlusion_class_names)
+        env.extras["pred_occ_success_index"] = int(self.success_occlusion_index)
+        env.extras["pred_occ_success_class"] = self.success_occlusion_class
+        env.extras["pred_occ_success_mask"] = occ_indices == self.success_occlusion_index
+        env.extras["pred_occ_success_rate"] = float((occ_indices == self.success_occlusion_index).float().mean().item())
 
         with torch.inference_mode():
-            features = self.encoder_model(images)
-            if features.dim() > 2:
-                features = features.view(features.shape[0], -1)
+            features = features.to(env.device)
+            # Legacy ViT/ResNet policy-feature extraction retained for reference.
+            # images = self.preprocess(reward_images)
+            # features = self.encoder_model(images)
+            # if features.dim() > 2:
+            #     features = features.view(features.shape[0], -1)
             reset_mask = env.episode_length_buf == 0
         if reset_mask.any():
             self.feature_history[reset_mask] = features[reset_mask].unsqueeze(1).repeat(1, self.history_len, 1)

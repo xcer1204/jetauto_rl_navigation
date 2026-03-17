@@ -4,6 +4,29 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
+from .multitask_inference import DEFAULT_OCCLUSION_CLASS_NAMES
+
+
+def _get_predicted_occlusion_classes(env) -> torch.Tensor:
+    pred = env.extras.get("pred_occ_class", None)
+    if pred is None:
+        return torch.full((env.num_envs,), -1, device=env.device, dtype=torch.long)
+
+    pred_t = torch.as_tensor(pred, device=env.device, dtype=torch.long).reshape(-1)
+    if pred_t.numel() == 1:
+        pred_t = pred_t.repeat(env.num_envs)
+    elif pred_t.numel() != env.num_envs:
+        pred_t = torch.full((env.num_envs,), -1, device=env.device, dtype=torch.long)
+    return pred_t
+
+
+def _resolve_success_class_index(env, success_class_name: str) -> int:
+    class_names = env.extras.get("pred_occ_class_names", DEFAULT_OCCLUSION_CLASS_NAMES)
+    class_names = tuple(str(name) for name in class_names)
+    try:
+        return class_names.index(str(success_class_name))
+    except ValueError:
+        return 0
 
 
 # def goal_reached(
@@ -42,25 +65,15 @@ def robot_out_of_bounds(
 def visibility_success(
     env,
     threshold: float = 0.9,
+    success_class_name: str = "0-20%",
     x_limits: tuple[float, float] = (-0.1, 3.1),
     y_limits: tuple[float, float] = (-3.4, 1.8),
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Terminate on visibility success, matching the old direct-environment logic.
+    """Terminate when the multitask model predicts the best occlusion bucket in bounds."""
+    del threshold
 
-    Success is only counted when the target visibility ratio exceeds the threshold
-    and the robot is still within the valid area.
-    """
-    vis = env.extras.get("vis_ratio", None)
-    if vis is None:
-        vis_t = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-    else:
-        vis_t = torch.as_tensor(vis, device=env.device, dtype=torch.float32).reshape(-1)
-        if vis_t.numel() == 1:
-            vis_t = vis_t.repeat(env.num_envs)
-        elif vis_t.numel() != env.num_envs:
-            vis_t = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-    vis_t = vis_t.clamp(0.0, 1.0)
-
+    pred_occ = _get_predicted_occlusion_classes(env)
+    success_class_index = _resolve_success_class_index(env, success_class_name)
     failed = robot_out_of_bounds(env, x_limits=x_limits, y_limits=y_limits, asset_cfg=asset_cfg)
-    return (vis_t > threshold) & (~failed)
+    return (pred_occ == success_class_index) & (~failed)

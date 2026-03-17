@@ -19,7 +19,7 @@ from jetauto_navigation.robots.jetauto import JETAUTO_CONFIG
 
 from . import mdp
 
-VRROBO_SCENE_DATA_ROOT = "/home/zgao/VR-Robo/vrrobo_isaaclab/exts/scene_data"
+VRROBO_SCENE_DATA_ROOT = "/home/ubuntu/xc_isaac/VR-Robo/vrrobo_isaaclab/exts/scene_data"
 ASSET_OFFSET = (3.2, 0.0, -0.01)
 
 
@@ -219,6 +219,12 @@ class ObservationsCfg:
                 "save_max_images": 100,
                 "save_env_index": 0,
                 "save_dir": "logs/gs_render_debug",
+                "multitask_model_path": (
+                    "/home/ubuntu/PersonalFiles/Liyou/deepLabSegment_code/"
+                    "logs_multitask/multitask_2026_03_16_16_31_06/best_epoch_weights.pth"
+                ),
+                "multitask_project_root": "",
+                "success_occlusion_class": "0-20%",
                 "save_debug_masks": False,
                 "save_mask_every_n_steps": 1,
                 "save_mask_max_images": -1,
@@ -341,6 +347,7 @@ class RewardsCfg:
         params={
             "success_threshold": 0.9,
             "success_bonus": 5.0,
+            "success_class_name": "0-20%",
             "idle_penalty": -0.01,
             "collision_penalty": -5.0,
             "x_limits": (0.0, 0.7),
@@ -376,7 +383,7 @@ class TerminationsCfg:
     # goal_reached = DoneTerm(func=mdp.goal_reached, params={"command_name": "rgb_command", "threshold": 0.35})
     visibility_success = DoneTerm(
         func=mdp.visibility_success,
-        params={"threshold": 0.9, "x_limits": (0.0, 0.7), "y_limits": (-3.0, 1.0)},
+        params={"threshold": 0.9, "success_class_name": "0-20%", "x_limits": (0.0, 0.7), "y_limits": (-3.0, 1.0)},
     )
     out_of_bounds = DoneTerm(func=mdp.robot_out_of_bounds, params={"x_limits": (0.0, 0.7), "y_limits": (-3.0, 1.0)})
 

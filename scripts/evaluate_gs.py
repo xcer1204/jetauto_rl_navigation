@@ -11,6 +11,12 @@ from isaaclab.app import AppLauncher
 
 
 parser = argparse.ArgumentParser(description="Evaluate a GS-based Jetauto checkpoint with skrl.")
+parser.add_argument(
+    "--disable_fabric",
+    action="store_true",
+    default=False,
+    help="Disable fabric and use USD I/O operations.",
+)
 parser.add_argument("--num_envs", type=int, default=None, help="Override the number of environments.")
 parser.add_argument("--task", type=str, default="Jetauto-VRRobo-Manager-Play-v0", help="Gym task name.")
 parser.add_argument(
@@ -24,26 +30,26 @@ parser.add_argument("--seed", type=int, default=None, help="Evaluation seed. Use
 parser.add_argument("--episodes", type=int, default=100, help="Number of episodes to evaluate.")
 parser.add_argument("--max_steps", type=int, default=None, help="Optional max env-steps per episode.")
 parser.add_argument(
-    "--success_threshold",
-    type=float,
-    default=0.9,
-    help="Visibility threshold used for success accounting.",
+    "--success_class_name",
+    type=str,
+    default=None,
+    help="Predicted occlusion class counted as success. If omitted, read it from the environment config.",
 )
 parser.add_argument(
     "--x_limits",
     type=float,
     nargs=2,
-    default=(-0.1, 3.1),
+    default=None,
     metavar=("X_MIN", "X_MAX"),
-    help="Valid x-range used for out-of-bounds accounting.",
+    help="Valid x-range used for out-of-bounds accounting. If omitted, read it from the environment config.",
 )
 parser.add_argument(
     "--y_limits",
     type=float,
     nargs=2,
-    default=(-3.4, 1.8),
+    default=None,
     metavar=("Y_MIN", "Y_MAX"),
-    help="Valid y-range used for out-of-bounds accounting.",
+    help="Valid y-range used for out-of-bounds accounting. If omitted, read it from the environment config.",
 )
 parser.add_argument(
     "--ml_framework",
@@ -134,9 +140,109 @@ def _resolve_checkpoint(log_root_path: str, algorithm: str) -> str:
     )
 
 
+def _get_policy_terms(base_env) -> list[str]:
+    obs_manager = getattr(base_env, "observation_manager", None)
+    if obs_manager is None:
+        return []
+    active_terms = getattr(obs_manager, "active_terms", {})
+    return [str(term) for term in active_terms.get("policy", [])]
+
+
+def _resolve_policy_term(base_env, requested_term: str, fallback_to_full_policy: bool) -> str:
+    policy_terms = _get_policy_terms(base_env)
+    if not policy_terms:
+        return requested_term
+
+    if requested_term in policy_terms:
+        return requested_term
+
+    if requested_term == "gs_image" and len(policy_terms) == 1:
+        resolved_term = policy_terms[0]
+        print(
+            f"[INFO] Policy term '{requested_term}' is not defined by the environment. "
+            f"Using the only available policy term: '{resolved_term}'."
+        )
+        return resolved_term
+
+    if fallback_to_full_policy:
+        print(
+            f"[INFO] Policy term '{requested_term}' is not defined by the environment. "
+            "Falling back to the full policy observation vector."
+        )
+        return requested_term
+
+    available_terms = ", ".join(policy_terms)
+    raise ValueError(
+        f"Policy term '{requested_term}' is not defined by the environment. "
+        f"Available policy terms: {available_terms}"
+    )
+
+
+def _get_term_params(cfg_section, term_name: str) -> dict:
+    if cfg_section is None:
+        return {}
+    term_cfg = getattr(cfg_section, term_name, None)
+    params = getattr(term_cfg, "params", None)
+    if params is None:
+        return {}
+    return dict(params)
+
+
+def _resolve_eval_settings(env_cfg) -> tuple[str, tuple[float, float], tuple[float, float]]:
+    termination_cfg = getattr(env_cfg, "terminations", None)
+    rewards_cfg = getattr(env_cfg, "rewards", None)
+
+    visibility_success_params = _get_term_params(termination_cfg, "visibility_success")
+    out_of_bounds_params = _get_term_params(termination_cfg, "out_of_bounds")
+    reward_params = _get_term_params(rewards_cfg, "visibility_progress")
+
+    success_class_name = args_cli.success_class_name
+    if success_class_name is None:
+        success_class_name = visibility_success_params.get(
+            "success_class_name",
+            reward_params.get("success_class_name", "0-20%"),
+        )
+
+    x_limits = args_cli.x_limits
+    if x_limits is None:
+        x_limits = out_of_bounds_params.get("x_limits", visibility_success_params.get("x_limits"))
+    if x_limits is None:
+        x_limits = reward_params.get("x_limits", (-0.1, 3.1))
+
+    y_limits = args_cli.y_limits
+    if y_limits is None:
+        y_limits = out_of_bounds_params.get("y_limits", visibility_success_params.get("y_limits"))
+    if y_limits is None:
+        y_limits = reward_params.get("y_limits", (-3.4, 1.8))
+
+    return str(success_class_name), tuple(float(v) for v in x_limits), tuple(float(v) for v in y_limits)
+
+
 def _to_1d_tensor(value, device: torch.device | str, dtype: torch.dtype) -> torch.Tensor:
     tensor = torch.as_tensor(value, device=device, dtype=dtype)
     return tensor.reshape(-1)
+
+
+def _get_predicted_occlusion_classes(base_env, num_envs: int, device: torch.device | str) -> torch.Tensor:
+    pred = base_env.extras.get("pred_occ_class", None)
+    if pred is None:
+        return torch.full((num_envs,), -1, device=device, dtype=torch.long)
+
+    pred_t = _to_1d_tensor(pred, device=device, dtype=torch.long)
+    if pred_t.numel() == 1:
+        pred_t = pred_t.repeat(num_envs)
+    elif pred_t.numel() != num_envs:
+        pred_t = torch.full((num_envs,), -1, device=device, dtype=torch.long)
+    return pred_t
+
+
+def _resolve_success_class_index(base_env, success_class_name: str) -> int:
+    class_names = base_env.extras.get("pred_occ_class_names", ("0-20%", "20-40%", "40-60%", "60-80%", "80-100%"))
+    class_names = tuple(str(name) for name in class_names)
+    try:
+        return class_names.index(str(success_class_name))
+    except ValueError:
+        return 0
 
 
 def _compute_out_of_bounds_mask(base_env, x_limits: tuple[float, float], y_limits: tuple[float, float]) -> torch.Tensor:
@@ -148,7 +254,12 @@ def _compute_out_of_bounds_mask(base_env, x_limits: tuple[float, float], y_limit
 
 
 def main():
-    env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
+    env_cfg = parse_env_cfg(
+        args_cli.task,
+        device=args_cli.device,
+        num_envs=args_cli.num_envs,
+        use_fabric=False if args_cli.disable_fabric else None,
+    )
     agent_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent)
     if not isinstance(agent_cfg, dict):
         raise TypeError(f"Expected a dict agent config from '{args_cli.agent}', but received: {type(agent_cfg)}")
@@ -178,9 +289,14 @@ def main():
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    policy_term_name = _resolve_policy_term(env.unwrapped, args_cli.policy_term, args_cli.full_policy_fallback)
+    success_class_name, x_limits, y_limits = _resolve_eval_settings(env_cfg)
+    print(f"[INFO] Evaluation success class: {success_class_name}")
+    print(f"[INFO] Evaluation bounds: x={x_limits}, y={y_limits}")
+
     env = GSEnvWrapper(
         env,
-        policy_term_name=args_cli.policy_term,
+        policy_term_name=policy_term_name,
         fallback_to_full_policy=args_cli.full_policy_fallback,
     )
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
@@ -236,18 +352,10 @@ def main():
             continue
 
         base_env = env.unwrapped
-        vis = base_env.extras.get("vis_ratio", None)
-        if vis is None:
-            vis_t = torch.zeros(num_envs, device=device, dtype=torch.float32)
-        else:
-            vis_t = _to_1d_tensor(vis, device=device, dtype=torch.float32).clamp(0.0, 1.0)
-            if vis_t.numel() == 1:
-                vis_t = vis_t.repeat(num_envs)
-            elif vis_t.numel() != num_envs:
-                vis_t = torch.zeros(num_envs, device=device, dtype=torch.float32)
-
-        out_of_bounds = _compute_out_of_bounds_mask(base_env, tuple(args_cli.x_limits), tuple(args_cli.y_limits))
-        success_mask = (vis_t > args_cli.success_threshold) & (~out_of_bounds)
+        pred_occ = _get_predicted_occlusion_classes(base_env, num_envs=num_envs, device=device)
+        success_class_index = _resolve_success_class_index(base_env, success_class_name)
+        out_of_bounds = _compute_out_of_bounds_mask(base_env, x_limits, y_limits)
+        success_mask = (pred_occ == success_class_index) & (~out_of_bounds)
 
         done_ids = torch.nonzero(done_t, as_tuple=False).reshape(-1).tolist()
         for idx in done_ids:
@@ -290,6 +398,9 @@ def main():
         "task": args_cli.task,
         "checkpoint": checkpoint_path,
         "episodes": len(finished_returns),
+        "success_class_name": success_class_name,
+        "x_limits": list(x_limits),
+        "y_limits": list(y_limits),
         "success_rate": float(np.mean(finished_success)),
         "avg_return": float(np.mean(finished_returns)),
         "std_return": float(np.std(finished_returns)),

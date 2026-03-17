@@ -290,7 +290,10 @@ def main():
     resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
     env_cfg.log_dir = log_dir
 
+    print("[train_gs] About to call gym.make(...)", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    print("[train_gs] gym.make(...) finished", flush=True)
+
 
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -306,12 +309,18 @@ def main():
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
+    print("[train_gs] About to wrap env with GSEnvWrapper", flush=True)
     env = GSEnvWrapper(
         env,
         policy_term_name=args_cli.policy_term,
         fallback_to_full_policy=args_cli.full_policy_fallback,
     )
+    print("[train_gs] GSEnvWrapper finished", flush=True)
+
+    print("[train_gs] About to wrap env with SkrlVecEnvWrapper", flush=True)
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
+    print("[train_gs] SkrlVecEnvWrapper finished", flush=True)
+
 
     start_time = time.time()
     agent_class = str(agent_cfg.get("agent", {}).get("class", "")).lower()
