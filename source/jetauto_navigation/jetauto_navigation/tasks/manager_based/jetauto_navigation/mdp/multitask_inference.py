@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -10,9 +11,9 @@ import torch.nn.functional as F
 
 
 DEFAULT_MULTITASK_MODEL_PATH = (
-    "/home/ubuntu/PersonalFiles/Liyou/deepLabSegment_code/"
-    "logs_multitask/multitask_2026_03_16_16_31_06/best_epoch_weights.pth"
+    "/home/zgao/jetauto_rl_navigation/logs/best_epoch_weights.pth"
 )
+DEFAULT_MULTITASK_PROJECT_ROOT = os.environ.get("MULTITASK_PROJECT_ROOT", "/home/zgao/deepLabSegment")
 DEFAULT_OCCLUSION_CLASS_NAMES = ("0-20%", "20-40%", "40-60%", "60-80%", "80-100%")
 _WSL_DISTRO_NAME = "Ubuntu"
 
@@ -151,12 +152,16 @@ class MultiTaskOcclusionPredictor:
         return occ_indices, occ_probs, features
 
     def _resolve_project_root(self, project_root: str | None) -> Path:
-        if project_root:
-            root = resolve_runtime_path(project_root)
-            model_file = root / "nets" / "deeplabv3_multitask.py"
-            if model_file.exists():
-                return root
-            raise FileNotFoundError(f"Invalid DeepLab project root '{root}': missing nets/deeplabv3_multitask.py")
+        explicit_root = str(project_root).strip() if project_root is not None else ""
+        if explicit_root:
+            return self._validate_project_root(explicit_root)
+
+        default_root = str(DEFAULT_MULTITASK_PROJECT_ROOT).strip()
+        if default_root:
+            try:
+                return self._validate_project_root(default_root)
+            except FileNotFoundError:
+                pass
 
         for parent in [self.model_path.parent, *self.model_path.parents]:
             model_file = parent / "nets" / "deeplabv3_multitask.py"
@@ -167,6 +172,14 @@ class MultiTaskOcclusionPredictor:
             f"Could not infer the DeepLab project root from '{self.model_path}'. "
             "Pass multitask_project_root explicitly."
         )
+
+    @staticmethod
+    def _validate_project_root(project_root: str) -> Path:
+        root = resolve_runtime_path(project_root)
+        model_file = root / "nets" / "deeplabv3_multitask.py"
+        if model_file.exists():
+            return root
+        raise FileNotFoundError(f"Invalid DeepLab project root '{root}': missing nets/deeplabv3_multitask.py")
 
     def _load_state_dict(self, state_dict: dict) -> None:
         model_dict = self.model.state_dict()

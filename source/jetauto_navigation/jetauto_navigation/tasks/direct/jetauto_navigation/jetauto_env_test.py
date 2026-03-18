@@ -132,9 +132,9 @@ class JetautoSingleRoomEmptyEnv(DirectRLEnv):
 
 
         bg_usd_cfg = sim_utils.UsdFileCfg(
-            # usd_path="/home/ubuntu/xc_isaac/Downloads/corridor.usdz",
-            # usd_path="/home/ubuntu/xc_isaac/MasterThesis/jetauto_navigation/data/point_cloud.usdz",
-            usd_path="/home/ubuntu/xc_isaac/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.usdz",
+            # usd_path="/home/zgao/Downloads/corridor.usdz",
+            # usd_path="/home/zgao/MasterThesis/jetauto_navigation/data/point_cloud.usdz",
+            usd_path="/home/zgao/video_data_process/results_corridor/3dgs_output/point_cloud/iteration_30000/point_cloud.usdz",
             scale=(bg_scale, bg_scale, bg_scale),
         )
         sim_utils.spawn_from_usd(

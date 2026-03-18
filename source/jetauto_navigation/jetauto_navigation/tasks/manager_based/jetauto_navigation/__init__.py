@@ -48,6 +48,54 @@ gym.register(
 )
 
 gym.register(
+    id="Jetauto-VRRobo-Manager-RandomOcc-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboRandomOccEnvCfg",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-RandomOcc-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboRandomOccEnvCfg_PLAY",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-RendererRandomOcc-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboRendererRandomOccEnvCfg",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-RendererRandomOcc-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_env_cfg:JetautoVrRoboRendererRandomOccEnvCfg_PLAY",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
     id="Jetauto-VRRobo-Manager-Custom3DGS-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,

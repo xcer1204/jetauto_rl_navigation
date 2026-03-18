@@ -19,7 +19,7 @@ from jetauto_navigation.robots.jetauto import JETAUTO_CONFIG
 
 from . import mdp
 
-VRROBO_SCENE_DATA_ROOT = "/home/ubuntu/xc_isaac/VR-Robo/vrrobo_isaaclab/exts/scene_data"
+VRROBO_SCENE_DATA_ROOT = "/home/zgao/VR-Robo/vrrobo_isaaclab/exts/scene_data"
 ASSET_OFFSET = (3.2, 0.0, -0.01)
 
 
@@ -220,10 +220,9 @@ class ObservationsCfg:
                 "save_env_index": 0,
                 "save_dir": "logs/gs_render_debug",
                 "multitask_model_path": (
-                    "/home/ubuntu/PersonalFiles/Liyou/deepLabSegment_code/"
-                    "logs_multitask/multitask_2026_03_16_16_31_06/best_epoch_weights.pth"
+                    "/home/zgao/jetauto_rl_navigation/logs/best_epoch_weights.pth"
                 ),
-                "multitask_project_root": "",
+                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/home/zgao/deepLabSegment"),
                 "success_occlusion_class": "0-20%",
                 "save_debug_masks": False,
                 "save_mask_every_n_steps": 1,
@@ -257,6 +256,92 @@ class ObservationsCfg:
         # base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         # base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         # projected_gravity = ObsTerm(func=mdp.projected_gravity)
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class RandomOcclusionObservationsCfg:
+    @configclass
+    class PolicyCfg(ObsGroup):
+        gs_image = ObsTerm(
+            func=mdp.random_occlusion_feature,
+            params={
+                "feature_dim": 320,
+                "history_len": 4,
+                "feature_mode": "zeros",
+                "occlusion_class_names": ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"],
+                "success_occlusion_class": "0-20%",
+            },
+            noise=None,
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        robot_pos = ObsTerm(func=mdp.root_pos_e)
+        robot_quat = ObsTerm(func=mdp.root_quat_w)
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class RendererRandomOcclusionObservationsCfg:
+    @configclass
+    class PolicyCfg(ObsGroup):
+        gs_image = ObsTerm(
+            func=mdp.gs_image_feature,
+            params={
+                "camera_pos": [0.0, -0.1, 0.2],
+                "camera_rot": [0.0, 23.0, 0.0],
+                "asset_offset_pos": list(ASSET_OFFSET),
+                "save_debug_images": False,
+                "save_every_n_steps": 1,
+                "save_max_images": 100,
+                "save_env_index": 0,
+                "save_dir": "logs/gs_render_debug",
+                "multitask_model_path": (
+                    "/home/zgao/jetauto_rl_navigation/logs/best_epoch_weights.pth"
+                ),
+                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/home/zgao/deepLabSegment"),
+                "success_occlusion_class": "0-20%",
+                "save_debug_masks": False,
+                "save_mask_every_n_steps": 1,
+                "save_mask_max_images": -1,
+                "save_mask_env_index": 0,
+                "mask_occluded_dir": "logs/gs_mask_debug/occluded",
+                "mask_target_only_dir": "logs/gs_mask_debug/target_only",
+                "mask_target_from_command": False,
+                "mask_command_name": "rgb_command",
+                "mask_target_default": "red",
+                "mask_threshold": 0.5,
+                "mask_binary": True,
+                "randomize_occlusion_prediction": True,
+            },
+            noise=None,
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        robot_pos = ObsTerm(func=mdp.root_pos_e)
+        robot_quat = ObsTerm(func=mdp.root_quat_w)
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -409,6 +494,34 @@ class JetautoVrRoboEnvCfg(ManagerBasedRLEnvCfg):
 
 @configclass
 class JetautoVrRoboEnvCfg_PLAY(JetautoVrRoboEnvCfg):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.scene.env_spacing = 4.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class JetautoVrRoboRandomOccEnvCfg(JetautoVrRoboEnvCfg):
+    observations: RandomOcclusionObservationsCfg = RandomOcclusionObservationsCfg()
+
+
+@configclass
+class JetautoVrRoboRandomOccEnvCfg_PLAY(JetautoVrRoboRandomOccEnvCfg):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.scene.env_spacing = 4.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class JetautoVrRoboRendererRandomOccEnvCfg(JetautoVrRoboEnvCfg):
+    observations: RendererRandomOcclusionObservationsCfg = RendererRandomOcclusionObservationsCfg()
+
+
+@configclass
+class JetautoVrRoboRendererRandomOccEnvCfg_PLAY(JetautoVrRoboRendererRandomOccEnvCfg):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.scene.num_envs = 1

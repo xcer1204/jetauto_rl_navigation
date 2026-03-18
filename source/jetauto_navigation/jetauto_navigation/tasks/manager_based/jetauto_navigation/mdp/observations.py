@@ -18,7 +18,11 @@ import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation, RigidObjectCollection
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.managers.manager_term_cfg import ObservationTermCfg
-from .multitask_inference import DEFAULT_MULTITASK_MODEL_PATH, MultiTaskOcclusionPredictor
+from .multitask_inference import (
+    DEFAULT_MULTITASK_MODEL_PATH,
+    DEFAULT_OCCLUSION_CLASS_NAMES,
+    MultiTaskOcclusionPredictor,
+)
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -167,7 +171,10 @@ class gs_image_feature(ManagerTermBase):
         self.occlusion_class_names = tuple(self.occlusion_predictor.occlusion_class_names)
         self.success_occlusion_class = str(cfg.params.get("success_occlusion_class", "0-20%"))
         self.success_occlusion_index = self.occlusion_predictor.class_index(self.success_occlusion_class)
+        self.randomize_occlusion_prediction = bool(cfg.params.get("randomize_occlusion_prediction", False))
         print("[gs_image_feature] Multitask occlusion predictor ready.")
+        if self.randomize_occlusion_prediction:
+            print("[gs_image_feature] Random occlusion labels enabled. Image features still come from renderer inputs.")
 
         print("[gs_image_feature] Reusing DeepLab backbone features for the policy observation.")
         self.output_dim = int(self.occlusion_predictor.feature_dim)
@@ -279,6 +286,7 @@ class gs_image_feature(ManagerTermBase):
         mask_target_default: str | None = None,
         mask_threshold: float | None = None,
         mask_binary: bool | None = None,
+        randomize_occlusion_prediction: bool | None = None,
     ) -> torch.Tensor:
         # print(f"[gs_image_feature] called, step={env.common_step_counter}")
         # Accept debug params from ObservationTermCfg to satisfy manager param validation.
@@ -330,6 +338,8 @@ class gs_image_feature(ManagerTermBase):
             self.mask_threshold = float(mask_threshold)
         if mask_binary is not None:
             self.mask_binary = bool(mask_binary)
+        if randomize_occlusion_prediction is not None:
+            self.randomize_occlusion_prediction = bool(randomize_occlusion_prediction)
 
         robot: Articulation = env.scene[asset_cfg.name]
         pos_r = robot.data.root_pos_w - env.scene.env_origins
@@ -384,6 +394,8 @@ class gs_image_feature(ManagerTermBase):
         reward_images = torch.tensor(images_np, dtype=torch.float32, device=env.device).reshape(env.num_envs, 3, 180, 320)
         reward_images = reward_images / 255.0
         occ_indices, occ_probs, features = self.occlusion_predictor.predict_with_features(reward_images)
+        if self.randomize_occlusion_prediction:
+            occ_indices, occ_probs = self._sample_random_occlusion_prediction(env)
         env.extras["pred_occ_class"] = occ_indices.to(env.device)
         env.extras["pred_occ_probs"] = occ_probs.to(env.device)
         env.extras["pred_occ_class_names"] = list(self.occlusion_class_names)
@@ -407,6 +419,12 @@ class gs_image_feature(ManagerTermBase):
         self.feature_history[:, -1, :] = features
         return self.feature_history.reshape(env.num_envs, self.history_len * self.output_dim)
         # return features
+
+    def _sample_random_occlusion_prediction(self, env: ManagerBasedRLEnv) -> tuple[torch.Tensor, torch.Tensor]:
+        probs = torch.rand((env.num_envs, len(self.occlusion_class_names)), device=env.device, dtype=torch.float32)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        occ_indices = probs.argmax(dim=-1)
+        return occ_indices, probs
 
     def _maybe_save_debug_image(self, images_np: np.ndarray):
         self._obs_step += 1
@@ -511,3 +529,108 @@ class gs_image_feature(ManagerTermBase):
                 self._mask_api_warned = True
             # Keep training running even if mask dump fails.
             return
+
+
+class random_occlusion_feature(ManagerTermBase):
+    """Testing observation term that bypasses renderer and predictor."""
+
+    def __init__(self, cfg: ObservationTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.occlusion_class_names = tuple(
+            str(name) for name in cfg.params.get("occlusion_class_names", DEFAULT_OCCLUSION_CLASS_NAMES)
+        )
+        if not self.occlusion_class_names:
+            raise ValueError("random_occlusion_feature requires at least one occlusion class name.")
+
+        self.success_occlusion_class = str(cfg.params.get("success_occlusion_class", self.occlusion_class_names[0]))
+        self.success_occlusion_index = self._class_index(self.success_occlusion_class)
+        self.output_dim = max(1, int(cfg.params.get("feature_dim", 320)))
+        self.history_len = max(1, int(cfg.params.get("history_len", 4)))
+        self.feature_mode = str(cfg.params.get("feature_mode", "zeros")).lower()
+        self.feature_history = torch.zeros(
+            (env.num_envs, self.history_len, self.output_dim),
+            device=env.device,
+            dtype=torch.float32,
+        )
+        print(
+            "[random_occlusion_feature] Using synthetic occlusion labels. "
+            f"classes={self.occlusion_class_names} feature_dim={self.output_dim} feature_mode={self.feature_mode}"
+        )
+
+    def reset(self, env_ids: torch.Tensor | None = None):
+        if env_ids is None:
+            self.feature_history.zero_()
+            return
+        self.feature_history[env_ids] = 0.0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        success_occlusion_class: str | None = None,
+        occlusion_class_names: list[str] | tuple[str, ...] | None = None,
+        feature_dim: int | None = None,
+        history_len: int | None = None,
+        feature_mode: str | None = None,
+    ) -> torch.Tensor:
+        if success_occlusion_class is not None and success_occlusion_class != self.success_occlusion_class:
+            self.success_occlusion_class = str(success_occlusion_class)
+            self.success_occlusion_index = self._class_index(self.success_occlusion_class)
+
+        if occlusion_class_names is not None:
+            class_names = tuple(str(name) for name in occlusion_class_names)
+            if class_names and class_names != self.occlusion_class_names:
+                self.occlusion_class_names = class_names
+                self.success_occlusion_index = self._class_index(self.success_occlusion_class)
+
+        if feature_dim is not None and int(feature_dim) != self.output_dim:
+            raise ValueError(
+                f"random_occlusion_feature was initialized with feature_dim={self.output_dim}, "
+                f"but received runtime feature_dim={int(feature_dim)}."
+            )
+
+        if history_len is not None and int(history_len) != self.history_len:
+            raise ValueError(
+                f"random_occlusion_feature was initialized with history_len={self.history_len}, "
+                f"but received runtime history_len={int(history_len)}."
+            )
+
+        if feature_mode is not None:
+            self.feature_mode = str(feature_mode).lower()
+
+        probs = torch.rand((env.num_envs, len(self.occlusion_class_names)), device=env.device, dtype=torch.float32)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        occ_indices = probs.argmax(dim=-1)
+        features = self._make_features(env)
+
+        env.extras["pred_occ_class"] = occ_indices
+        env.extras["pred_occ_probs"] = probs
+        env.extras["pred_occ_class_names"] = list(self.occlusion_class_names)
+        env.extras["pred_occ_success_index"] = int(self.success_occlusion_index)
+        env.extras["pred_occ_success_class"] = self.success_occlusion_class
+        env.extras["pred_occ_success_mask"] = occ_indices == self.success_occlusion_index
+        env.extras["pred_occ_success_rate"] = float((occ_indices == self.success_occlusion_index).float().mean().item())
+
+        reset_mask = env.episode_length_buf == 0
+        if reset_mask.any():
+            self.feature_history[reset_mask] = features[reset_mask].unsqueeze(1).repeat(1, self.history_len, 1)
+
+        self.feature_history = torch.roll(self.feature_history, shifts=-1, dims=1)
+        self.feature_history[:, -1, :] = features
+        return self.feature_history.reshape(env.num_envs, self.history_len * self.output_dim)
+
+    def _make_features(self, env: ManagerBasedRLEnv) -> torch.Tensor:
+        if self.feature_mode == "normal":
+            return torch.randn((env.num_envs, self.output_dim), device=env.device, dtype=torch.float32)
+        if self.feature_mode == "uniform":
+            return torch.rand((env.num_envs, self.output_dim), device=env.device, dtype=torch.float32)
+        if self.feature_mode == "ones":
+            return torch.ones((env.num_envs, self.output_dim), device=env.device, dtype=torch.float32)
+        return torch.zeros((env.num_envs, self.output_dim), device=env.device, dtype=torch.float32)
+
+    def _class_index(self, class_name: str) -> int:
+        try:
+            return self.occlusion_class_names.index(str(class_name))
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown occlusion class '{class_name}'. Available classes: {self.occlusion_class_names}"
+            ) from exc
