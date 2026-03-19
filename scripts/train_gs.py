@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import copy
 import os
 import random
@@ -212,6 +213,68 @@ def _build_ppo_rnn_agent_cfg(raw_cfg: dict[str, Any], observation_space, device)
     return cfg
 
 
+def _install_sim_fail_fast_guard(env) -> None:
+    """Fail fast if Isaac Sim stops during training instead of spinning indefinitely."""
+    base_env = getattr(env, "unwrapped", env)
+    sim = getattr(base_env, "sim", None)
+    if sim is None:
+        print("[train_gs] Fail-fast sim guard skipped: env has no simulation context.", flush=True)
+        return
+
+    def _build_stop_error(reason: str) -> RuntimeError:
+        details = [reason]
+        common_step = getattr(base_env, "common_step_counter", None)
+        if common_step is not None:
+            details.append(f"common_step={int(common_step)}")
+        sim_step = getattr(base_env, "_sim_step_counter", None)
+        if sim_step is not None:
+            details.append(f"sim_step={int(sim_step)}")
+        try:
+            details.append(f"is_playing={bool(sim.is_playing())}")
+        except Exception:
+            pass
+        try:
+            details.append(f"is_stopped={bool(sim.is_stopped())}")
+        except Exception:
+            pass
+        return RuntimeError("[train_gs] Fail-fast: simulation/timeline stopped. " + ", ".join(details))
+
+    def _stash_callback_exception(exc: Exception) -> None:
+        if getattr(builtins, "ISAACLAB_CALLBACK_EXCEPTION", None) is None:
+            builtins.ISAACLAB_CALLBACK_EXCEPTION = exc
+
+    original_step = sim.step
+
+    def _fail_fast_step(*args, **kwargs):
+        pending_exc = getattr(builtins, "ISAACLAB_CALLBACK_EXCEPTION", None)
+        if pending_exc is not None:
+            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
+            raise pending_exc
+
+        try:
+            if sim.is_stopped():
+                raise _build_stop_error("timeline already stopped before sim.step")
+            if not sim.is_playing():
+                raise _build_stop_error("timeline is not playing before sim.step")
+        except RuntimeError:
+            raise
+
+        return original_step(*args, **kwargs)
+
+    sim.step = _fail_fast_step
+
+    if hasattr(sim, "_app_control_on_stop_handle_fn"):
+        def _fail_fast_stop_callback(event):
+            exc = _build_stop_error(f"received stop event type={getattr(event, 'type', 'unknown')}")
+            print(str(exc), flush=True)
+            _stash_callback_exception(exc)
+            return
+
+        sim._app_control_on_stop_handle_fn = _fail_fast_stop_callback
+
+    print("[train_gs] Installed fail-fast simulation stop guard.", flush=True)
+
+
 def _run_ppo_rnn_training(env, agent_cfg: dict[str, Any], resume_path: str | None):
     if not args_cli.ml_framework.startswith("torch"):
         raise RuntimeError("PPO_RNN training in train_gs.py currently supports only the torch backend.")
@@ -273,6 +336,9 @@ def main():
     algorithm = _resolve_algorithm_name(args_cli.agent)
     experiment_cfg = agent_cfg.setdefault("agent", {}).setdefault("experiment", {})
     experiment_dir = experiment_cfg.get("directory", "jetauto_vrrobo_manager")
+    if experiment_cfg.get("checkpoint_interval") == "auto":
+        trainer_timesteps = int(agent_cfg.get("trainer", {}).get("timesteps", 0))
+        experiment_cfg["checkpoint_interval"] = max(1, trainer_timesteps // 20)
     log_root_path = os.path.abspath(os.path.join("logs", "skrl", experiment_dir))
     run_name = f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{algorithm}_{args_cli.ml_framework}"
     if experiment_cfg.get("experiment_name"):
@@ -293,6 +359,7 @@ def main():
     print("[train_gs] About to call gym.make(...)", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     print("[train_gs] gym.make(...) finished", flush=True)
+    _install_sim_fail_fast_guard(env)
 
 
     if isinstance(env.unwrapped, DirectMARLEnv):
