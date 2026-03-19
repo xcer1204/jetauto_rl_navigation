@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import builtins
 import copy
 import os
 import random
@@ -91,6 +90,8 @@ if version.parse(skrl.__version__) < version.parse(SKRL_MIN_VERSION):
     )
 
 if args_cli.ml_framework.startswith("torch"):
+    import torch
+
     from skrl.agents.torch.ppo import PPO_RNN
     from skrl.memories.torch import RandomMemory
     from skrl.resources.preprocessors.torch import RunningStandardScaler
@@ -104,6 +105,32 @@ if args_cli.ml_framework.startswith("torch"):
     )
 else:
     from skrl.utils.runner.jax import Runner
+
+
+def _cuda_memory_summary(device: Any) -> str:
+    if not args_cli.ml_framework.startswith("torch"):
+        return "cuda summary unavailable (non-torch backend)"
+    if not torch.cuda.is_available():
+        return "cuda unavailable"
+    torch_device = torch.device(device)
+    if torch_device.type != "cuda":
+        return f"device={torch_device} non_cuda"
+    device_index = torch_device.index if torch_device.index is not None else torch.cuda.current_device()
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info(device_index)
+    except TypeError:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+    allocated_bytes = torch.cuda.memory_allocated(torch_device)
+    reserved_bytes = torch.cuda.memory_reserved(torch_device)
+    max_allocated_bytes = torch.cuda.max_memory_allocated(torch_device)
+    max_reserved_bytes = torch.cuda.max_memory_reserved(torch_device)
+    mib = 1024.0 * 1024.0
+    return (
+        f"device={device_index} allocated_mb={allocated_bytes / mib:.1f} "
+        f"reserved_mb={reserved_bytes / mib:.1f} free_mb={free_bytes / mib:.1f} "
+        f"total_mb={total_bytes / mib:.1f} max_allocated_mb={max_allocated_bytes / mib:.1f} "
+        f"max_reserved_mb={max_reserved_bytes / mib:.1f}"
+    )
 
 
 def _resolve_algorithm_name(agent_cfg_key: str) -> str:
@@ -213,69 +240,40 @@ def _build_ppo_rnn_agent_cfg(raw_cfg: dict[str, Any], observation_space, device)
     return cfg
 
 
-def _install_sim_fail_fast_guard(env) -> None:
-    """Fail fast if Isaac Sim stops during training instead of spinning indefinitely."""
-    base_env = getattr(env, "unwrapped", env)
-    sim = getattr(base_env, "sim", None)
-    if sim is None:
-        print("[train_gs] Fail-fast sim guard skipped: env has no simulation context.", flush=True)
-        return
-
-    def _build_stop_error(reason: str) -> RuntimeError:
-        details = [reason]
-        common_step = getattr(base_env, "common_step_counter", None)
-        if common_step is not None:
-            details.append(f"common_step={int(common_step)}")
-        sim_step = getattr(base_env, "_sim_step_counter", None)
-        if sim_step is not None:
-            details.append(f"sim_step={int(sim_step)}")
-        try:
-            details.append(f"is_playing={bool(sim.is_playing())}")
-        except Exception:
-            pass
-        try:
-            details.append(f"is_stopped={bool(sim.is_stopped())}")
-        except Exception:
-            pass
-        return RuntimeError("[train_gs] Fail-fast: simulation/timeline stopped. " + ", ".join(details))
-
-    def _stash_callback_exception(exc: Exception) -> None:
-        if getattr(builtins, "ISAACLAB_CALLBACK_EXCEPTION", None) is None:
-            builtins.ISAACLAB_CALLBACK_EXCEPTION = exc
-
-    original_step = sim.step
-
-    def _fail_fast_step(*args, **kwargs):
-        pending_exc = getattr(builtins, "ISAACLAB_CALLBACK_EXCEPTION", None)
-        if pending_exc is not None:
-            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
-            raise pending_exc
-
-        try:
-            if sim.is_stopped():
-                raise _build_stop_error("timeline already stopped before sim.step")
-            if not sim.is_playing():
-                raise _build_stop_error("timeline is not playing before sim.step")
-        except RuntimeError:
-            raise
-
-        return original_step(*args, **kwargs)
-
-    sim.step = _fail_fast_step
-
-    if hasattr(sim, "_app_control_on_stop_handle_fn"):
-        def _fail_fast_stop_callback(event):
-            exc = _build_stop_error(f"received stop event type={getattr(event, 'type', 'unknown')}")
-            print(str(exc), flush=True)
-            _stash_callback_exception(exc)
-            return
-
-        sim._app_control_on_stop_handle_fn = _fail_fast_stop_callback
-
-    print("[train_gs] Installed fail-fast simulation stop guard.", flush=True)
+def _uses_recurrent_policy(agent_cfg_key: str, agent_cfg: dict[str, Any]) -> bool:
+    agent_class = str(agent_cfg.get("agent", {}).get("class", "")).lower()
+    if agent_class == "ppo_rnn":
+        return True
+    lowered = str(agent_cfg_key).lower()
+    return "lstm" in lowered or "rnn" in lowered
 
 
-def _run_ppo_rnn_training(env, agent_cfg: dict[str, Any], resume_path: str | None):
+def _override_policy_term_history_len(env_cfg, policy_term_name: str, history_len: int) -> bool:
+    observations_cfg = getattr(env_cfg, "observations", None)
+    policy_cfg = getattr(observations_cfg, "policy", None) if observations_cfg is not None else None
+    term_cfg = getattr(policy_cfg, policy_term_name, None) if policy_cfg is not None else None
+    if term_cfg is None:
+        return False
+
+    params = getattr(term_cfg, "params", None)
+    if params is None:
+        params = {}
+        setattr(term_cfg, "params", params)
+    elif not isinstance(params, dict):
+        params = dict(params)
+        setattr(term_cfg, "params", params)
+
+    previous = params.get("history_len", 4)
+    params["history_len"] = int(max(1, history_len))
+    print(
+        "[train_gs] Overriding policy term history "
+        f"term={policy_term_name} previous={previous} current={params['history_len']}",
+        flush=True,
+    )
+    return True
+
+
+def _run_ppo_rnn_training(env, agent_cfg: dict[str, Any], resume_path: str | None, startup_cuda_summary: str | None):
     if not args_cli.ml_framework.startswith("torch"):
         raise RuntimeError("PPO_RNN training in train_gs.py currently supports only the torch backend.")
 
@@ -302,6 +300,36 @@ def _run_ppo_rnn_training(env, agent_cfg: dict[str, Any], resume_path: str | Non
         cfg=ppo_rnn_cfg,
     )
 
+    original_update = agent._update
+    startup_suffix = f" startup[{startup_cuda_summary}]" if startup_cuda_summary else ""
+
+    def _debug_update(timestep: int, timesteps: int):
+        print(
+            "[train_gs] PPO update start "
+            f"timestep={timestep} rollout={getattr(agent, '_rollout', -1)} "
+            f"current[{_cuda_memory_summary(env.device)}]{startup_suffix}",
+            flush=True,
+        )
+        try:
+            return original_update(timestep, timesteps)
+        except Exception as exc:
+            print(
+                "[train_gs] PPO update exception "
+                f"timestep={timestep} rollout={getattr(agent, '_rollout', -1)} "
+                f"error={exc} current[{_cuda_memory_summary(env.device)}]{startup_suffix}",
+                flush=True,
+            )
+            raise
+        finally:
+            print(
+                "[train_gs] PPO update end "
+                f"timestep={timestep} rollout={getattr(agent, '_rollout', -1)} "
+                f"current[{_cuda_memory_summary(env.device)}]{startup_suffix}",
+                flush=True,
+            )
+
+    agent._update = _debug_update
+
     trainer_cfg = copy.deepcopy(agent_cfg.get("trainer", {}))
     trainer_cfg.pop("class", None)
     trainer = SequentialTrainer(env=env, agents=agent, cfg=trainer_cfg)
@@ -317,6 +345,14 @@ def main():
     agent_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent)
     if not isinstance(agent_cfg, dict):
         raise TypeError(f"Expected a dict agent config from '{args_cli.agent}', but received: {type(agent_cfg)}")
+
+    if _uses_recurrent_policy(args_cli.agent, agent_cfg):
+        if not _override_policy_term_history_len(env_cfg, args_cli.policy_term, history_len=1):
+            print(
+                "[train_gs] Recurrent-policy history override skipped "
+                f"because term '{args_cli.policy_term}' was not found in env_cfg.observations.policy.",
+                flush=True,
+            )
 
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
@@ -359,7 +395,12 @@ def main():
     print("[train_gs] About to call gym.make(...)", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     print("[train_gs] gym.make(...) finished", flush=True)
-    _install_sim_fail_fast_guard(env)
+    startup_cuda_summary = None
+    if args_cli.ml_framework.startswith("torch"):
+        base_env = env.unwrapped if hasattr(env, "unwrapped") else env
+        startup_cuda_summary = _cuda_memory_summary(getattr(base_env, "device", args_cli.device))
+        setattr(base_env, "_startup_cuda_memory_summary", startup_cuda_summary)
+        print(f"[train_gs] startup cuda {startup_cuda_summary}", flush=True)
 
 
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -392,7 +433,7 @@ def main():
     start_time = time.time()
     agent_class = str(agent_cfg.get("agent", {}).get("class", "")).lower()
     if agent_class == "ppo_rnn":
-        _run_ppo_rnn_training(env, agent_cfg, resume_path)
+        _run_ppo_rnn_training(env, agent_cfg, resume_path, startup_cuda_summary)
     else:
         runner = Runner(env, agent_cfg)
         if resume_path:

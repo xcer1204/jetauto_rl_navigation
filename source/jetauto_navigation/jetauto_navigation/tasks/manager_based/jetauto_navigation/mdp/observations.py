@@ -4,6 +4,7 @@ import atexit
 import pickle
 import socket
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,6 +79,11 @@ class GSServer:
                     break
                 payload += packet
         except socket.timeout:
+            if payload:
+                print(
+                    f"[GSServer] socket timeout with partial payload bytes={len(payload)} host={self.host} port={self.port}",
+                    flush=True,
+                )
             pass
         finally:
             conn.close()
@@ -85,7 +91,14 @@ class GSServer:
 
         if not payload:
             return None
-        return pickle.loads(payload)
+        try:
+            return pickle.loads(payload)
+        except Exception as exc:
+            print(
+                f"[GSServer] failed to decode payload bytes={len(payload)} host={self.host} port={self.port} error={exc}",
+                flush=True,
+            )
+            raise
 
     def start(self):
         atexit.register(self.close)
@@ -100,7 +113,11 @@ class GSServer:
 
     def _run(self):
         while self.running:
-            arr = self._receive_once()
+            try:
+                arr = self._receive_once()
+            except Exception as exc:
+                print(f"[GSServer] receiver loop exception: {exc}", flush=True)
+                raise
             if arr is None:
                 continue
             with self.lock:
@@ -259,6 +276,164 @@ class gs_image_feature(ManagerTermBase):
             return
         self.feature_history[env_ids] = 0.0
 
+    @staticmethod
+    def _summarize_value(name: str, value, max_items: int = 4) -> str:
+        if isinstance(value, torch.Tensor):
+            tensor = value.detach()
+            if getattr(tensor, "names", None) is not None and any(n is not None for n in tensor.names):
+                tensor = tensor.rename(None)
+            shape = tuple(tensor.shape)
+            dtype = str(tensor.dtype)
+            if tensor.numel() == 0:
+                return f"{name}: tensor shape={shape} dtype={dtype} empty"
+            tensor_cpu = tensor.float().cpu()
+            flat = tensor_cpu.reshape(-1)
+            finite = torch.isfinite(flat)
+            finite_count = int(finite.sum().item())
+            sample = flat[:max_items].tolist()
+            if finite_count > 0:
+                finite_values = flat[finite]
+                min_value = float(finite_values.min().item())
+                max_value = float(finite_values.max().item())
+                mean_value = float(finite_values.mean().item())
+            else:
+                min_value = float("nan")
+                max_value = float("nan")
+                mean_value = float("nan")
+            return (
+                f"{name}: tensor shape={shape} dtype={dtype} "
+                f"finite={finite_count}/{flat.numel()} min={min_value:.6g} "
+                f"max={max_value:.6g} mean={mean_value:.6g} sample={sample}"
+            )
+        if isinstance(value, np.ndarray):
+            array = value
+            shape = tuple(array.shape)
+            dtype = str(array.dtype)
+            if array.size == 0:
+                return f"{name}: ndarray shape={shape} dtype={dtype} empty"
+            flat = array.reshape(-1)
+            if np.issubdtype(array.dtype, np.number):
+                finite = np.isfinite(flat)
+                finite_count = int(finite.sum())
+                sample = flat[:max_items].tolist()
+                if finite_count > 0:
+                    finite_values = flat[finite]
+                    min_value = float(finite_values.min())
+                    max_value = float(finite_values.max())
+                    mean_value = float(finite_values.mean())
+                else:
+                    min_value = float("nan")
+                    max_value = float("nan")
+                    mean_value = float("nan")
+                return (
+                    f"{name}: ndarray shape={shape} dtype={dtype} "
+                    f"finite={finite_count}/{flat.size} min={min_value:.6g} "
+                    f"max={max_value:.6g} mean={mean_value:.6g} sample={sample}"
+                )
+            return f"{name}: ndarray shape={shape} dtype={dtype}"
+        return f"{name}: type={type(value).__name__} value={value!r}"
+
+    def _log_debug_context(self, stage: str, env: ManagerBasedRLEnv, **values) -> None:
+        common_step = int(getattr(env, "common_step_counter", -1))
+        sim_step = int(getattr(env, "_sim_step_counter", -1))
+        try:
+            episode_min = int(env.episode_length_buf.min().item())
+            episode_max = int(env.episode_length_buf.max().item())
+        except Exception:
+            episode_min = -1
+            episode_max = -1
+        print(
+            "[gs_image_feature] "
+            f"debug stage={stage} common_step={common_step} sim_step={sim_step} "
+            f"obs_step={self._obs_step} episode_len_min={episode_min} episode_len_max={episode_max}",
+            flush=True,
+        )
+        print(f"[gs_image_feature] cuda {self._summarize_cuda_memory(env.device)}", flush=True)
+        startup_cuda_summary = self._startup_cuda_memory_summary(env)
+        if startup_cuda_summary is not None:
+            print(f"[gs_image_feature] startup cuda {startup_cuda_summary}", flush=True)
+        for name, value in values.items():
+            print(f"[gs_image_feature] {self._summarize_value(name, value)}", flush=True)
+
+    @staticmethod
+    def _summarize_cuda_memory(device) -> str:
+        if not torch.cuda.is_available():
+            return "unavailable"
+        torch_device = torch.device(device)
+        if torch_device.type != "cuda":
+            return f"device={torch_device} non_cuda"
+        device_index = torch_device.index if torch_device.index is not None else torch.cuda.current_device()
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device_index)
+        except TypeError:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+        allocated_bytes = torch.cuda.memory_allocated(torch_device)
+        reserved_bytes = torch.cuda.memory_reserved(torch_device)
+        max_allocated_bytes = torch.cuda.max_memory_allocated(torch_device)
+        max_reserved_bytes = torch.cuda.max_memory_reserved(torch_device)
+        mib = 1024.0 * 1024.0
+        return (
+            f"device={device_index} allocated_mb={allocated_bytes / mib:.1f} "
+            f"reserved_mb={reserved_bytes / mib:.1f} free_mb={free_bytes / mib:.1f} "
+            f"total_mb={total_bytes / mib:.1f} max_allocated_mb={max_allocated_bytes / mib:.1f} "
+            f"max_reserved_mb={max_reserved_bytes / mib:.1f}"
+        )
+
+    @staticmethod
+    def _startup_cuda_memory_summary(env: ManagerBasedRLEnv) -> str | None:
+        summary = getattr(env, "_startup_cuda_memory_summary", None)
+        if summary:
+            return str(summary)
+        return None
+
+    def _warn_if_suspicious_inputs(
+        self,
+        env: ManagerBasedRLEnv,
+        pos_r: torch.Tensor,
+        quat_r: torch.Tensor,
+        cam_pos_w: torch.Tensor,
+        cam_quat_ros: torch.Tensor,
+        red_pos: torch.Tensor,
+        green_pos: torch.Tensor,
+        blue_pos: torch.Tensor,
+    ) -> None:
+        warnings: list[str] = []
+        robot_quat_norm = quat_r.norm(dim=-1)
+        cam_quat_norm = cam_quat_ros.norm(dim=-1)
+        robot_bad = (robot_quat_norm - 1.0).abs() > 1e-2
+        cam_bad = (cam_quat_norm - 1.0).abs() > 1e-2
+        if bool(robot_bad.any()):
+            warnings.append(f"robot_quat_norm_bad_envs={robot_bad.nonzero(as_tuple=False)[:8].flatten().tolist()}")
+        if bool(cam_bad.any()):
+            warnings.append(f"cam_quat_norm_bad_envs={cam_bad.nonzero(as_tuple=False)[:8].flatten().tolist()}")
+        for name, tensor in (
+            ("robot_pos", pos_r),
+            ("robot_quat", quat_r),
+            ("cam_pos_w", cam_pos_w),
+            ("cam_quat_ros", cam_quat_ros),
+            ("red_pos", red_pos),
+            ("green_pos", green_pos),
+            ("blue_pos", blue_pos),
+        ):
+            if isinstance(tensor, torch.Tensor) and tensor.numel() > 0 and tensor.is_floating_point():
+                if not bool(torch.isfinite(tensor).all()):
+                    warnings.append(f"{name}=non_finite")
+        if warnings:
+            print("[gs_image_feature] suspicious render inputs: " + "; ".join(warnings), flush=True)
+            self._log_debug_context(
+                "pre_render_warning",
+                env,
+                robot_pos=pos_r,
+                robot_quat=quat_r,
+                cam_pos_w=cam_pos_w,
+                cam_quat_ros=cam_quat_ros,
+                red_pos=red_pos,
+                green_pos=green_pos,
+                blue_pos=blue_pos,
+                robot_quat_norm=robot_quat_norm,
+                cam_quat_norm=cam_quat_norm,
+            )
+
 
     def __call__(
         self,
@@ -287,6 +462,7 @@ class gs_image_feature(ManagerTermBase):
         mask_threshold: float | None = None,
         mask_binary: bool | None = None,
         randomize_occlusion_prediction: bool | None = None,
+        history_len: int | None = None,
     ) -> torch.Tensor:
         # print(f"[gs_image_feature] called, step={env.common_step_counter}")
         # Accept debug params from ObservationTermCfg to satisfy manager param validation.
@@ -340,6 +516,11 @@ class gs_image_feature(ManagerTermBase):
             self.mask_binary = bool(mask_binary)
         if randomize_occlusion_prediction is not None:
             self.randomize_occlusion_prediction = bool(randomize_occlusion_prediction)
+        if history_len is not None and int(history_len) != self.history_len:
+            raise ValueError(
+                f"gs_image_feature was initialized with history_len={self.history_len}, "
+                f"but received runtime history_len={int(history_len)}."
+            )
 
         robot: Articulation = env.scene[asset_cfg.name]
         pos_r = robot.data.root_pos_w - env.scene.env_origins
@@ -374,28 +555,112 @@ class gs_image_feature(ManagerTermBase):
                     t = t.rename(None)
             return t
 
-        cam_pos_w   = _strip_names(cam_pos_w)
+        cam_pos_w = _strip_names(cam_pos_w)
         cam_quat_ros = _strip_names(cam_quat_ros)
-        red_pos     = _strip_names(red_pos)
-        green_pos   = _strip_names(green_pos)
-        blue_pos    = _strip_names(blue_pos)
+        red_pos = _strip_names(red_pos)
+        green_pos = _strip_names(green_pos)
+        blue_pos = _strip_names(blue_pos)
 
+        self._warn_if_suspicious_inputs(env, pos_r, quat_r, cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
 
+        render_started = time.perf_counter()
+        try:
+            self.conn.root.render(cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
+        except Exception as exc:
+            self._log_debug_context(
+                "render_exception",
+                env,
+                error=str(exc),
+                robot_pos=pos_r,
+                robot_quat=quat_r,
+                cam_pos_w=cam_pos_w,
+                cam_quat_ros=cam_quat_ros,
+                red_pos=red_pos,
+                green_pos=green_pos,
+                blue_pos=blue_pos,
+            )
+            raise
+        render_elapsed = time.perf_counter() - render_started
+        if render_elapsed > 5.0:
+            print(
+                "[gs_image_feature] slow render call "
+                f"common_step={int(getattr(env, 'common_step_counter', -1))} "
+                f"sim_step={int(getattr(env, '_sim_step_counter', -1))} "
+                f"elapsed_s={render_elapsed:.3f}",
+                flush=True,
+            )
 
-
-        self.conn.root.render(cam_pos_w, cam_quat_ros, red_pos, green_pos, blue_pos)
-
-        images_np = self.image_server.get_data()
+        try:
+            images_np = self.image_server.get_data()
+        except Exception as exc:
+            self._log_debug_context(
+                "get_data_exception",
+                env,
+                error=str(exc),
+                cam_pos_w=cam_pos_w,
+                cam_quat_ros=cam_quat_ros,
+            )
+            raise
+        if not isinstance(images_np, np.ndarray) or images_np.shape != (env.num_envs, 3 * 180 * 320):
+            self._log_debug_context("unexpected_image_buffer", env, images_np=images_np)
         self._maybe_save_debug_image(images_np)
         if self.save_debug_masks and not self._mask_api_warned:
             print("[gs_image_feature] save_debug_masks is ignored when using the RGB-only render server.")
             self._mask_api_warned = True
 
-        reward_images = torch.tensor(images_np, dtype=torch.float32, device=env.device).reshape(env.num_envs, 3, 180, 320)
+        try:
+            reward_images = torch.tensor(images_np, dtype=torch.float32, device=env.device).reshape(
+                env.num_envs, 3, 180, 320
+            )
+        except Exception as exc:
+            self._log_debug_context("reward_image_tensor_exception", env, error=str(exc), images_np=images_np)
+            raise
         reward_images = reward_images / 255.0
-        occ_indices, occ_probs, features = self.occlusion_predictor.predict_with_features(reward_images)
+        common_step = int(getattr(env, "common_step_counter", -1))
+        startup_cuda_summary = self._startup_cuda_memory_summary(env)
+        if common_step > 0 and common_step % 40 == 0:
+            print(
+                "[gs_image_feature] predictor pre "
+                f"common_step={common_step} sim_step={int(getattr(env, '_sim_step_counter', -1))} "
+                f"current[{self._summarize_cuda_memory(env.device)}]"
+                f"{f' startup[{startup_cuda_summary}]' if startup_cuda_summary else ''}",
+                flush=True,
+            )
+        predict_started = time.perf_counter()
+        try:
+            occ_indices, occ_probs, features = self.occlusion_predictor.predict_with_features(reward_images)
+        except Exception as exc:
+            self._log_debug_context(
+                "predict_with_features_exception",
+                env,
+                error=str(exc),
+                reward_images=reward_images,
+                images_np=images_np,
+            )
+            raise
+        predict_elapsed = time.perf_counter() - predict_started
+        if common_step > 0 and common_step % 40 == 0:
+            print(
+                "[gs_image_feature] predictor post "
+                f"common_step={common_step} sim_step={int(getattr(env, '_sim_step_counter', -1))} "
+                f"current[{self._summarize_cuda_memory(env.device)}]"
+                f"{f' startup[{startup_cuda_summary}]' if startup_cuda_summary else ''}",
+                flush=True,
+            )
+        if predict_elapsed > 5.0:
+            print(
+                "[gs_image_feature] slow predictor call "
+                f"common_step={int(getattr(env, 'common_step_counter', -1))} "
+                f"sim_step={int(getattr(env, '_sim_step_counter', -1))} "
+                f"elapsed_s={predict_elapsed:.3f}",
+                flush=True,
+            )
         if self.randomize_occlusion_prediction:
             occ_indices, occ_probs = self._sample_random_occlusion_prediction(env)
+        if isinstance(occ_probs, torch.Tensor) and not bool(torch.isfinite(occ_probs).all()):
+            self._log_debug_context("occ_probs_non_finite", env, occ_probs=occ_probs)
+        if isinstance(features, torch.Tensor) and not bool(torch.isfinite(features).all()):
+            self._log_debug_context("features_non_finite", env, features=features)
         env.extras["pred_occ_class"] = occ_indices.to(env.device)
         env.extras["pred_occ_probs"] = occ_probs.to(env.device)
         env.extras["pred_occ_class_names"] = list(self.occlusion_class_names)
