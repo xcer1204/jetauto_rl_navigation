@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import random
 import time
 from datetime import datetime
+from typing import Any
 
 from isaaclab.app import AppLauncher
 
@@ -115,7 +117,16 @@ if version.parse(skrl.__version__) < version.parse(SKRL_MIN_VERSION):
     )
 
 if args_cli.ml_framework.startswith("torch"):
+    from skrl.agents.torch.ppo import PPO_RNN
+    from skrl.memories.torch import RandomMemory
+    from skrl.resources.preprocessors.torch import RunningStandardScaler
+    from skrl.resources.schedulers.torch import KLAdaptiveLR
     from skrl.utils.runner.torch import Runner
+
+    from jetauto_navigation.tasks.manager_based.jetauto_navigation.agents.skrl_lstm_models import (
+        LSTMDeterministicValue,
+        LSTMGaussianPolicy,
+    )
 else:
     from skrl.utils.runner.jax import Runner
 
@@ -138,6 +149,141 @@ def _resolve_checkpoint(log_root_path: str, algorithm: str) -> str:
         run_dir=f".*_{algorithm}_{args_cli.ml_framework}",
         other_dirs=["checkpoints"],
     )
+
+
+def _checkpoint_looks_recurrent(checkpoint_path: str) -> bool:
+    normalized = checkpoint_path.replace("\\", "/").lower()
+    return "_lstm_" in normalized or "_rnn_" in normalized
+
+
+def _reward_shaper_function(scale: float):
+    def _reward_shaper(rewards, *_, **__):
+        return rewards * scale
+
+    return _reward_shaper
+
+
+def _resolve_torch_component(name: Any) -> Any:
+    if not isinstance(name, str):
+        return name
+    mapping = {
+        "KLAdaptiveLR": KLAdaptiveLR,
+        "RunningStandardScaler": RunningStandardScaler,
+    }
+    return mapping.get(name, name)
+
+
+def _extract_layers(model_cfg: dict[str, Any], key: str, default: list[int] | None = None) -> list[int]:
+    if default is None:
+        default = []
+    layers = model_cfg.get(key)
+    if isinstance(layers, (list, tuple)):
+        return [int(v) for v in layers]
+    network_cfg = model_cfg.get("network")
+    if isinstance(network_cfg, list) and network_cfg and isinstance(network_cfg[0], dict):
+        net_layers = network_cfg[0].get("layers")
+        if isinstance(net_layers, (list, tuple)):
+            return [int(v) for v in net_layers]
+    return [int(v) for v in default]
+
+
+def _build_ppo_rnn_models(env, models_cfg: dict[str, Any]) -> dict[str, Any]:
+    policy_cfg = copy.deepcopy(models_cfg.get("policy", {}))
+    value_cfg = copy.deepcopy(models_cfg.get("value", {}))
+
+    policy_class = str(policy_cfg.pop("class", "LSTMGaussianPolicy"))
+    value_class = str(value_cfg.pop("class", "LSTMDeterministicValue"))
+    if policy_class != "LSTMGaussianPolicy":
+        raise ValueError(f"Unsupported LSTM policy class: {policy_class}")
+    if value_class != "LSTMDeterministicValue":
+        raise ValueError(f"Unsupported LSTM value class: {value_class}")
+
+    policy = LSTMGaussianPolicy(
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device,
+        num_envs=env.num_envs,
+        clip_actions=bool(policy_cfg.get("clip_actions", False)),
+        clip_log_std=bool(policy_cfg.get("clip_log_std", True)),
+        min_log_std=float(policy_cfg.get("min_log_std", -20.0)),
+        max_log_std=float(policy_cfg.get("max_log_std", 2.0)),
+        initial_log_std=float(policy_cfg.get("initial_log_std", 0.0)),
+        encoder_layers=_extract_layers(policy_cfg, "encoder_layers"),
+        rnn_hidden_size=int(policy_cfg.get("rnn_hidden_size", 256)),
+        rnn_num_layers=int(policy_cfg.get("rnn_num_layers", 1)),
+        sequence_length=int(policy_cfg.get("sequence_length", 1)),
+        head_layers=_extract_layers(policy_cfg, "head_layers", default=[256, 128]),
+        activation=str(policy_cfg.get("activation", policy_cfg.get("activations", "elu"))),
+    )
+    value = LSTMDeterministicValue(
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device,
+        num_envs=env.num_envs,
+        clip_actions=bool(value_cfg.get("clip_actions", False)),
+        encoder_layers=_extract_layers(value_cfg, "encoder_layers"),
+        rnn_hidden_size=int(value_cfg.get("rnn_hidden_size", 256)),
+        rnn_num_layers=int(value_cfg.get("rnn_num_layers", 1)),
+        sequence_length=int(value_cfg.get("sequence_length", 1)),
+        head_layers=_extract_layers(value_cfg, "head_layers", default=[256, 128]),
+        activation=str(value_cfg.get("activation", value_cfg.get("activations", "elu"))),
+    )
+    return {"policy": policy, "value": value}
+
+
+def _build_ppo_rnn_agent_cfg(raw_cfg: dict[str, Any], observation_space, device) -> dict[str, Any]:
+    cfg = copy.deepcopy(raw_cfg)
+    cfg.pop("class", None)
+
+    cfg["learning_rate_scheduler"] = _resolve_torch_component(cfg.get("learning_rate_scheduler"))
+    cfg["state_preprocessor"] = _resolve_torch_component(cfg.get("state_preprocessor"))
+    cfg["value_preprocessor"] = _resolve_torch_component(cfg.get("value_preprocessor"))
+
+    for key in ("learning_rate_scheduler_kwargs", "state_preprocessor_kwargs", "value_preprocessor_kwargs"):
+        cfg[key] = {} if cfg.get(key) is None else dict(cfg[key])
+
+    if "rewards_shaper_scale" in cfg:
+        cfg["rewards_shaper"] = _reward_shaper_function(float(cfg["rewards_shaper_scale"]))
+
+    if cfg.get("state_preprocessor") is not None:
+        cfg["state_preprocessor_kwargs"].update({"size": observation_space, "device": device})
+    if cfg.get("value_preprocessor") is not None:
+        cfg["value_preprocessor_kwargs"].update({"size": 1, "device": device})
+
+    return cfg
+
+
+def _uses_recurrent_policy(agent_cfg_key: str, agent_cfg: dict[str, Any]) -> bool:
+    agent_class = str(agent_cfg.get("agent", {}).get("class", "")).lower()
+    if agent_class == "ppo_rnn":
+        return True
+    lowered = str(agent_cfg_key).lower()
+    return "lstm" in lowered or "rnn" in lowered
+
+
+def _override_policy_term_history_len(env_cfg, policy_term_name: str, history_len: int) -> bool:
+    observations_cfg = getattr(env_cfg, "observations", None)
+    policy_cfg = getattr(observations_cfg, "policy", None) if observations_cfg is not None else None
+    term_cfg = getattr(policy_cfg, policy_term_name, None) if policy_cfg is not None else None
+    if term_cfg is None:
+        return False
+
+    params = getattr(term_cfg, "params", None)
+    if params is None:
+        params = {}
+        setattr(term_cfg, "params", params)
+    elif not isinstance(params, dict):
+        params = dict(params)
+        setattr(term_cfg, "params", params)
+
+    previous = params.get("history_len", 4)
+    params["history_len"] = int(max(1, history_len))
+    print(
+        "[evaluate_gs] Overriding policy term history "
+        f"term={policy_term_name} previous={previous} current={params['history_len']}",
+        flush=True,
+    )
+    return True
 
 
 def _get_policy_terms(base_env) -> list[str]:
@@ -253,6 +399,60 @@ def _compute_out_of_bounds_mask(base_env, x_limits: tuple[float, float], y_limit
     return ~(in_bounds_x & in_bounds_y)
 
 
+def _get_termination_term_mask(base_env, term_name: str, num_envs: int, device: torch.device | str) -> torch.Tensor | None:
+    termination_manager = getattr(base_env, "termination_manager", None)
+    if termination_manager is None:
+        return None
+
+    try:
+        term_value = termination_manager.get_term(term_name)
+    except Exception:
+        return None
+
+    return _to_1d_tensor(term_value, device=device, dtype=torch.bool)
+
+
+def _build_eval_agent(env, agent_cfg: dict[str, Any]):
+    agent_cfg["trainer"]["close_environment_at_exit"] = False
+    agent_cfg["agent"]["experiment"]["write_interval"] = 0
+    agent_cfg["agent"]["experiment"]["checkpoint_interval"] = 0
+    trainer_cfg = copy.deepcopy(agent_cfg.get("trainer", {}))
+    trainer_cfg.pop("class", None)
+
+    agent_class = str(agent_cfg.get("agent", {}).get("class", "")).lower()
+    if agent_class != "ppo_rnn":
+        runner = Runner(env, agent_cfg)
+        return runner.agent
+
+    if not args_cli.ml_framework.startswith("torch"):
+        raise RuntimeError("PPO_RNN evaluation in evaluate_gs.py currently supports only the torch backend.")
+
+    models = _build_ppo_rnn_models(env, agent_cfg.get("models", {}))
+    raw_agent_cfg = agent_cfg.get("agent", {})
+    rollouts = int(raw_agent_cfg.get("rollouts", 16))
+
+    memory_cfg = copy.deepcopy(agent_cfg.get("memory", {}))
+    memory_class = str(memory_cfg.pop("class", "RandomMemory")).lower()
+    if memory_class != "randommemory":
+        raise ValueError(f"Unsupported memory class for PPO_RNN: {memory_class}")
+    memory_size = int(memory_cfg.pop("memory_size", -1))
+    if memory_size < 0:
+        memory_size = rollouts
+    memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=env.device, **memory_cfg)
+
+    ppo_rnn_cfg = _build_ppo_rnn_agent_cfg(raw_agent_cfg, env.observation_space, env.device)
+    agent = PPO_RNN(
+        models=models,
+        memory=memory,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=env.device,
+        cfg=ppo_rnn_cfg,
+    )
+    agent.init(trainer_cfg=trainer_cfg)
+    return agent
+
+
 def main():
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -263,6 +463,14 @@ def main():
     agent_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent)
     if not isinstance(agent_cfg, dict):
         raise TypeError(f"Expected a dict agent config from '{args_cli.agent}', but received: {type(agent_cfg)}")
+
+    if _uses_recurrent_policy(args_cli.agent, agent_cfg):
+        if not _override_policy_term_history_len(env_cfg, args_cli.policy_term, history_len=1):
+            print(
+                "[evaluate_gs] Recurrent-policy history override skipped "
+                f"because term '{args_cli.policy_term}' was not found in env_cfg.observations.policy.",
+                flush=True,
+            )
 
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
@@ -280,6 +488,12 @@ def main():
     log_root_path = os.path.abspath(os.path.join("logs", "skrl", experiment_dir))
     checkpoint_path = _resolve_checkpoint(log_root_path, algorithm)
     log_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+    if _checkpoint_looks_recurrent(checkpoint_path) and not _uses_recurrent_policy(args_cli.agent, agent_cfg):
+        raise ValueError(
+            f"Checkpoint '{checkpoint_path}' appears to come from an LSTM/RNN run, "
+            f"but --agent={args_cli.agent!r} resolves to a non-recurrent config. "
+            "Please rerun with --agent skrl_lstm_cfg_entry_point."
+        )
     env_cfg.log_dir = log_dir
 
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
@@ -301,12 +515,9 @@ def main():
     )
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
 
-    agent_cfg["trainer"]["close_environment_at_exit"] = False
-    agent_cfg["agent"]["experiment"]["write_interval"] = 0
-    agent_cfg["agent"]["experiment"]["checkpoint_interval"] = 0
-    runner = Runner(env, agent_cfg)
-    runner.agent.load(checkpoint_path)
-    runner.agent.set_running_mode("eval")
+    agent = _build_eval_agent(env, agent_cfg)
+    agent.load(checkpoint_path)
+    agent.set_running_mode("eval")
 
     num_envs = int(getattr(env.unwrapped, "num_envs", getattr(env, "num_envs", 1)))
     device = getattr(env.unwrapped, "device", "cpu")
@@ -325,7 +536,7 @@ def main():
 
     while simulation_app.is_running() and len(finished_returns) < args_cli.episodes:
         with torch.inference_mode():
-            outputs = runner.agent.act(obs, timestep=0, timesteps=0)
+            outputs = agent.act(obs, timestep=0, timesteps=0)
             if hasattr(env, "possible_agents"):
                 actions = {agent: outputs[-1][agent].get("mean_actions", outputs[0][agent]) for agent in env.possible_agents}
             else:
@@ -352,10 +563,14 @@ def main():
             continue
 
         base_env = env.unwrapped
-        pred_occ = _get_predicted_occlusion_classes(base_env, num_envs=num_envs, device=device)
-        success_class_index = _resolve_success_class_index(base_env, success_class_name)
-        out_of_bounds = _compute_out_of_bounds_mask(base_env, x_limits, y_limits)
-        success_mask = (pred_occ == success_class_index) & (~out_of_bounds)
+        success_mask = _get_termination_term_mask(base_env, "visibility_success", num_envs=num_envs, device=device)
+        out_of_bounds = _get_termination_term_mask(base_env, "out_of_bounds", num_envs=num_envs, device=device)
+
+        if success_mask is None or out_of_bounds is None:
+            pred_occ = _get_predicted_occlusion_classes(base_env, num_envs=num_envs, device=device)
+            success_class_index = _resolve_success_class_index(base_env, success_class_name)
+            out_of_bounds = _compute_out_of_bounds_mask(base_env, x_limits, y_limits)
+            success_mask = (pred_occ == success_class_index) & (~out_of_bounds)
 
         done_ids = torch.nonzero(done_t, as_tuple=False).reshape(-1).tolist()
         for idx in done_ids:

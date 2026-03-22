@@ -11,9 +11,9 @@ import torch.nn.functional as F
 
 
 DEFAULT_MULTITASK_MODEL_PATH = (
-    "/home/zgao/jetauto_rl_navigation/logs/best_epoch_weights.pth"
+    "/raid/home/than/zhiyuan/jetauto_rl_navigation/logs/best_epoch_weights.pth"
 )
-DEFAULT_MULTITASK_PROJECT_ROOT = os.environ.get("MULTITASK_PROJECT_ROOT", "/home/zgao/deepLabSegment")
+DEFAULT_MULTITASK_PROJECT_ROOT = os.environ.get("MULTITASK_PROJECT_ROOT", "/raid/home/than/zhiyuan/deepLabSegment")
 DEFAULT_OCCLUSION_CLASS_NAMES = ("0-20%", "20-40%", "40-60%", "60-80%", "80-100%")
 _WSL_DISTRO_NAME = "Ubuntu"
 

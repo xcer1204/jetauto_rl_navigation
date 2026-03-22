@@ -19,7 +19,7 @@ from jetauto_navigation.robots.jetauto import JETAUTO_CONFIG
 
 from . import mdp
 
-VRROBO_SCENE_DATA_ROOT = "/home/zgao/VR-Robo/vrrobo_isaaclab/exts/scene_data"
+VRROBO_SCENE_DATA_ROOT = "/raid/home/than/zhiyuan/VR-Robo/vrrobo_isaaclab/exts/scene_data"
 ASSET_OFFSET = (3.2, 0.0, -0.01)
 
 
@@ -220,9 +220,9 @@ class ObservationsCfg:
                 "save_env_index": 0,
                 "save_dir": "logs/gs_render_debug",
                 "multitask_model_path": (
-                    "/home/zgao/jetauto_rl_navigation/logs/best_epoch_weights.pth"
+                    "/raid/home/than/zhiyuan/jetauto_rl_navigation/logs/best_epoch_weights.pth"
                 ),
-                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/home/zgao/deepLabSegment"),
+                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/raid/home/than/zhiyuan/deepLabSegment"),
                 "success_occlusion_class": "0-20%",
                 "save_debug_masks": False,
                 "save_mask_every_n_steps": 1,
@@ -314,9 +314,9 @@ class RendererRandomOcclusionObservationsCfg:
                 "save_env_index": 0,
                 "save_dir": "logs/gs_render_debug",
                 "multitask_model_path": (
-                    "/home/zgao/jetauto_rl_navigation/logs/best_epoch_weights.pth"
+                    "/raid/home/than/zhiyuan/jetauto_rl_navigation/logs/best_epoch_weights.pth"
                 ),
-                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/home/zgao/deepLabSegment"),
+                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/raid/home/than/zhiyuan/deepLabSegment"),
                 "success_occlusion_class": "0-20%",
                 "save_debug_masks": False,
                 "save_mask_every_n_steps": 1,

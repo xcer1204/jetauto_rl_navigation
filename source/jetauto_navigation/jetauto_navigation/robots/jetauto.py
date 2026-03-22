@@ -10,8 +10,8 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 def _resolve_jetauto_usd_path() -> str:
     candidates = [
         os.environ.get("JETAUTO_USD_PATH"),
-        "/home/zgao/jetauto_rl_navigation-main/source/jetauto_driveable/jetauto_driveable/jetauto_driveable.usd",
-        "/home/zgao/ros2_ws/src/simulations/jetauto_description/urdf/jetauto_driveable/jetauto_driveable.usd",
+        "/raid/home/than/zhiyuan/jetauto_rl_navigation-main/source/jetauto_driveable/jetauto_driveable/jetauto_driveable.usd",
+        "/raid/home/than/zhiyuan/ros2_ws/src/simulations/jetauto_description/urdf/jetauto_driveable/jetauto_driveable.usd",
     ]
 
     for candidate in candidates:

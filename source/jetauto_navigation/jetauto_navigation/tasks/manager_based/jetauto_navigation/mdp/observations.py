@@ -618,14 +618,15 @@ class gs_image_feature(ManagerTermBase):
         reward_images = reward_images / 255.0
         common_step = int(getattr(env, "common_step_counter", -1))
         startup_cuda_summary = self._startup_cuda_memory_summary(env)
-        if common_step > 0 and common_step % 40 == 0:
-            print(
-                "[gs_image_feature] predictor pre "
-                f"common_step={common_step} sim_step={int(getattr(env, '_sim_step_counter', -1))} "
-                f"current[{self._summarize_cuda_memory(env.device)}]"
-                f"{f' startup[{startup_cuda_summary}]' if startup_cuda_summary else ''}",
-                flush=True,
-            )
+        # Disabled periodic predictor memory debug logs to reduce terminal noise during training.
+        # if common_step > 0 and common_step % 40 == 0:
+        #     print(
+        #         "[gs_image_feature] predictor pre "
+        #         f"common_step={common_step} sim_step={int(getattr(env, '_sim_step_counter', -1))} "
+        #         f"current[{self._summarize_cuda_memory(env.device)}]"
+        #         f"{f' startup[{startup_cuda_summary}]' if startup_cuda_summary else ''}",
+        #         flush=True,
+        #     )
         predict_started = time.perf_counter()
         try:
             occ_indices, occ_probs, features = self.occlusion_predictor.predict_with_features(reward_images)
@@ -639,14 +640,14 @@ class gs_image_feature(ManagerTermBase):
             )
             raise
         predict_elapsed = time.perf_counter() - predict_started
-        if common_step > 0 and common_step % 40 == 0:
-            print(
-                "[gs_image_feature] predictor post "
-                f"common_step={common_step} sim_step={int(getattr(env, '_sim_step_counter', -1))} "
-                f"current[{self._summarize_cuda_memory(env.device)}]"
-                f"{f' startup[{startup_cuda_summary}]' if startup_cuda_summary else ''}",
-                flush=True,
-            )
+        # if common_step > 0 and common_step % 40 == 0:
+        #     print(
+        #         "[gs_image_feature] predictor post "
+        #         f"common_step={common_step} sim_step={int(getattr(env, '_sim_step_counter', -1))} "
+        #         f"current[{self._summarize_cuda_memory(env.device)}]"
+        #         f"{f' startup[{startup_cuda_summary}]' if startup_cuda_summary else ''}",
+        #         flush=True,
+        #     )
         if predict_elapsed > 5.0:
             print(
                 "[gs_image_feature] slow predictor call "

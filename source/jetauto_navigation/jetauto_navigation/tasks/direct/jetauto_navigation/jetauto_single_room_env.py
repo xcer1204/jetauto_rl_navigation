@@ -69,7 +69,7 @@ class JetautoSingleRoomEnv(DirectRLEnv):
         bg_rot = (-0.05688028042359017, -0.00610525184353289, -0.0018002532294618672, 0.9983607157171052)
 
         bg_usd_cfg = sim_utils.UsdFileCfg(
-            usd_path="/home/zgao/video_data_process/results_lab1211/3dgs_output/point_cloud/iteration_30000/lab.usdz",
+            usd_path="/raid/home/than/zhiyuan/video_data_process/results_lab1211/3dgs_output/point_cloud/iteration_30000/lab.usdz",
             scale=(bg_scale, bg_scale, bg_scale),
         )
         # Spawn under env_0; the InteractiveScene clone will replicate to other envs.
