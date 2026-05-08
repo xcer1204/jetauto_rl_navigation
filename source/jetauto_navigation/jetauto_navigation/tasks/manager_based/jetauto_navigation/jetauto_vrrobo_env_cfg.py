@@ -19,7 +19,18 @@ from jetauto_navigation.robots.jetauto import JETAUTO_CONFIG
 
 from . import mdp
 
-VRROBO_SCENE_DATA_ROOT = "/raid/home/than/zhiyuan/VR-Robo/vrrobo_isaaclab/exts/scene_data"
+VRROBO_SCENE_DATA_ROOT = os.environ.get(
+    "VRROBO_SCENE_DATA_ROOT",
+    "/home/ubuntu/xc_isaac/VR-Robo/vrrobo_isaaclab/exts/scene_data",
+)
+VRROBO_MULTITASK_MODEL_PATH = os.environ.get(
+    "VRROBO_MULTITASK_MODEL_PATH",
+    (
+        "/home/ubuntu/xc_isaac/deepLabSegment/logs_multitask/"
+        "multitask_2026_05_03_01_27_37/best_epoch_weights.pth"
+    ),
+)
+VRROBO_MULTITASK_PROJECT_ROOT = os.environ.get("MULTITASK_PROJECT_ROOT", "/home/ubuntu/xc_isaac/deepLabSegment")
 ASSET_OFFSET = (3.2, 0.0, -0.01)
 
 
@@ -219,10 +230,8 @@ class ObservationsCfg:
                 "save_max_images": 100,
                 "save_env_index": 0,
                 "save_dir": "logs/gs_render_debug",
-                "multitask_model_path": (
-                    "/raid/home/than/zhiyuan/jetauto_rl_navigation/logs/best_epoch_weights.pth"
-                ),
-                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/raid/home/than/zhiyuan/deepLabSegment"),
+                "multitask_model_path": VRROBO_MULTITASK_MODEL_PATH,
+                "multitask_project_root": VRROBO_MULTITASK_PROJECT_ROOT,
                 "success_occlusion_class": "0-20%",
                 "save_debug_masks": False,
                 "save_mask_every_n_steps": 1,
@@ -313,10 +322,8 @@ class RendererRandomOcclusionObservationsCfg:
                 "save_max_images": 100,
                 "save_env_index": 0,
                 "save_dir": "logs/gs_render_debug",
-                "multitask_model_path": (
-                    "/raid/home/than/zhiyuan/jetauto_rl_navigation/logs/best_epoch_weights.pth"
-                ),
-                "multitask_project_root": os.environ.get("MULTITASK_PROJECT_ROOT", "/raid/home/than/zhiyuan/deepLabSegment"),
+                "multitask_model_path": VRROBO_MULTITASK_MODEL_PATH,
+                "multitask_project_root": VRROBO_MULTITASK_PROJECT_ROOT,
                 "success_occlusion_class": "0-20%",
                 "save_debug_masks": False,
                 "save_mask_every_n_steps": 1,

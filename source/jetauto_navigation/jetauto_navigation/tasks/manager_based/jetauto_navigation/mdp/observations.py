@@ -272,9 +272,11 @@ class gs_image_feature(ManagerTermBase):
     def reset(self, env_ids: torch.Tensor | None = None):
         self.image_server.reset(env_ids)
         if env_ids is None:
-            self.feature_history.zero_()
+            self.feature_history = torch.zeros_like(self.feature_history)
             return
-        self.feature_history[env_ids] = 0.0
+        feature_history = self.feature_history.clone()
+        feature_history[env_ids] = 0.0
+        self.feature_history = feature_history
 
     @staticmethod
     def _summarize_value(name: str, value, max_items: int = 4) -> str:
@@ -825,9 +827,11 @@ class random_occlusion_feature(ManagerTermBase):
 
     def reset(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
-            self.feature_history.zero_()
+            self.feature_history = torch.zeros_like(self.feature_history)
             return
-        self.feature_history[env_ids] = 0.0
+        feature_history = self.feature_history.clone()
+        feature_history[env_ids] = 0.0
+        self.feature_history = feature_history
 
     def __call__(
         self,
