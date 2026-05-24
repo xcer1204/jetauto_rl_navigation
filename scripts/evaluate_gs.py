@@ -453,6 +453,35 @@ def _build_eval_agent(env, agent_cfg: dict[str, Any]):
     return agent
 
 
+def _advance_eval_rnn_state(agent, terminated, truncated) -> None:
+    if not getattr(agent, "_rnn", False):
+        return
+
+    final_states = getattr(agent, "_rnn_final_states", None)
+    initial_states = getattr(agent, "_rnn_initial_states", None)
+    if not isinstance(final_states, dict) or not isinstance(initial_states, dict):
+        return
+
+    done = torch.as_tensor(terminated) | torch.as_tensor(truncated)
+    done = done.reshape(-1).to(device=agent.device, dtype=torch.bool)
+
+    policy_states = [state.clone() for state in final_states.get("policy", [])]
+    value_states = [state.clone() for state in final_states.get("value", [])]
+
+    finished = done.nonzero(as_tuple=False).reshape(-1)
+    if finished.numel():
+        for state in policy_states:
+            state[:, finished] = 0
+        if final_states.get("value") is final_states.get("policy"):
+            value_states = policy_states
+        else:
+            for state in value_states:
+                state[:, finished] = 0
+
+    initial_states["policy"] = policy_states
+    initial_states["value"] = value_states
+
+
 def main():
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -542,6 +571,7 @@ def main():
             else:
                 actions = outputs[-1].get("mean_actions", outputs[0])
             obs, reward, terminated, truncated, _ = env.step(actions)
+            _advance_eval_rnn_state(agent, terminated, truncated)
 
         reward_t = _to_1d_tensor(reward, device=device, dtype=torch.float32)
         term_t = _to_1d_tensor(terminated, device=device, dtype=torch.bool)

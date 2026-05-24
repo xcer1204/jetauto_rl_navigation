@@ -5,6 +5,8 @@ import copy
 import os
 import random
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from isaaclab.app import AppLauncher
@@ -353,6 +355,61 @@ def _create_progress_bar(total: int | None, desc: str):
     return tqdm(total=total, desc=desc, unit="step", dynamic_ncols=True)
 
 
+def _make_playback_run_name(checkpoint_path: str) -> str:
+    checkpoint_stem = Path(checkpoint_path).stem.replace(" ", "_")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{timestamp}_{checkpoint_stem}"
+
+
+def _configure_debug_image_save_dir(env_cfg, policy_term_name: str, playback_run_name: str) -> str | None:
+    observations_cfg = getattr(env_cfg, "observations", None)
+    policy_cfg = getattr(observations_cfg, "policy", None) if observations_cfg is not None else None
+    term_cfg = getattr(policy_cfg, policy_term_name, None) if policy_cfg is not None else None
+    if term_cfg is None:
+        return None
+
+    params = getattr(term_cfg, "params", None)
+    if params is None or not isinstance(params, dict):
+        return None
+    if not bool(params.get("save_debug_images", False)):
+        return None
+
+    base_dir = Path(str(params.get("save_dir", "logs/gs_render_debug_play")))
+    save_dir = base_dir / playback_run_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    params["save_dir"] = str(save_dir)
+    return str(save_dir)
+
+
+def _advance_eval_rnn_state(agent, terminated, truncated) -> None:
+    if not getattr(agent, "_rnn", False):
+        return
+
+    final_states = getattr(agent, "_rnn_final_states", None)
+    initial_states = getattr(agent, "_rnn_initial_states", None)
+    if not isinstance(final_states, dict) or not isinstance(initial_states, dict):
+        return
+
+    done = torch.as_tensor(terminated) | torch.as_tensor(truncated)
+    done = done.reshape(-1).to(device=agent.device, dtype=torch.bool)
+
+    policy_states = [state.clone() for state in final_states.get("policy", [])]
+    value_states = [state.clone() for state in final_states.get("value", [])]
+
+    finished = done.nonzero(as_tuple=False).reshape(-1)
+    if finished.numel():
+        for state in policy_states:
+            state[:, finished] = 0
+        if final_states.get("value") is final_states.get("policy"):
+            value_states = policy_states
+        else:
+            for state in value_states:
+                state[:, finished] = 0
+
+    initial_states["policy"] = policy_states
+    initial_states["value"] = value_states
+
+
 def _should_probe_render_frame(step: int) -> bool:
     if step <= 3:
         return True
@@ -464,6 +521,7 @@ def main():
     log_root_path = os.path.abspath(os.path.join("logs", "skrl", experiment_dir))
     checkpoint_path = _resolve_checkpoint(log_root_path, algorithm)
     log_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+    playback_run_name = _make_playback_run_name(checkpoint_path)
     if _checkpoint_looks_recurrent(checkpoint_path) and not _uses_recurrent_policy(args_cli.agent, agent_cfg):
         raise ValueError(
             f"Checkpoint '{checkpoint_path}' appears to come from an LSTM/RNN run, "
@@ -474,6 +532,9 @@ def main():
     print(f"[INFO] Loading model checkpoint from: {checkpoint_path}")
 
     env_cfg.log_dir = log_dir
+    debug_image_dir = _configure_debug_image_save_dir(env_cfg, args_cli.policy_term, playback_run_name)
+    if debug_image_dir is not None:
+        print(f"[INFO] Playback GS images will be saved under: {debug_image_dir}")
 
     try:
         env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -491,7 +552,7 @@ def main():
 
         if args_cli.video:
             video_kwargs = {
-                "video_folder": os.path.join(log_dir, "videos", "play"),
+                "video_folder": os.path.join(log_dir, "videos", "play", playback_run_name),
                 "step_trigger": lambda step: step == 0,
                 "video_length": args_cli.video_length,
                 "disable_logger": True,
@@ -532,7 +593,8 @@ def main():
                     }
                 else:
                     actions = outputs[-1].get("mean_actions", outputs[0])
-                obs, _, _, _, _ = env.step(actions)
+                obs, _, terminated, truncated, _ = env.step(actions)
+                _advance_eval_rnn_state(agent, terminated, truncated)
 
             timestep += 1
 

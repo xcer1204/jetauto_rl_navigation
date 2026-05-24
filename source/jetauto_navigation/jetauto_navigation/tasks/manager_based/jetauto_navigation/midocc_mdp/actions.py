@@ -51,6 +51,7 @@ class PlanarPoseStepAction(ActionTerm):
     def apply_actions(self):
         quat_w = self.robot.data.root_quat_w
         pos = self.robot.data.root_pos_w.clone()
+        env_origins = self._env.scene.env_origins
 
         delta_body = torch.stack(
             (
@@ -65,9 +66,11 @@ class PlanarPoseStepAction(ActionTerm):
         if self.cfg.z_lock is not None:
             pos[:, 2] = self.cfg.z_lock
         if self.cfg.x_limits is not None:
-            pos[:, 0] = pos[:, 0].clamp(self.cfg.x_limits[0], self.cfg.x_limits[1])
+            pos_local_x = (pos[:, 0] - env_origins[:, 0]).clamp(self.cfg.x_limits[0], self.cfg.x_limits[1])
+            pos[:, 0] = env_origins[:, 0] + pos_local_x
         if self.cfg.y_limits is not None:
-            pos[:, 1] = pos[:, 1].clamp(self.cfg.y_limits[0], self.cfg.y_limits[1])
+            pos_local_y = (pos[:, 1] - env_origins[:, 1]).clamp(self.cfg.y_limits[0], self.cfg.y_limits[1])
+            pos[:, 1] = env_origins[:, 1] + pos_local_y
 
         rot_m = math_utils.matrix_from_quat(quat_w)
         yaw = torch.atan2(rot_m[:, 1, 0], rot_m[:, 0, 0]) + self._step_cmd[:, 2] * self._substep_scale
