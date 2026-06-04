@@ -103,6 +103,9 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_midocc_env_cfg:JetautoVrRoboMidOccEnvCfg",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_ddpg_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_cfg.yaml",
+        "skrl_ddpg_tuned_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_tuned_cfg.yaml",
+        "skrl_sac_cfg_entry_point": f"{agents.__name__}:skrl_sac_vrrobo_cfg.yaml",
         "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )
@@ -115,6 +118,69 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_midocc_env_cfg:JetautoVrRoboMidOccEnvCfg_PLAY",
         "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_ddpg_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_cfg.yaml",
+        "skrl_ddpg_tuned_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_tuned_cfg.yaml",
+        "skrl_sac_cfg_entry_point": f"{agents.__name__}:skrl_sac_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-MidOcc-Continuous-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_midocc_env_cfg:JetautoVrRoboMidOccContinuousEnvCfg",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_ddpg_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_cfg.yaml",
+        "skrl_ddpg_tuned_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_tuned_cfg.yaml",
+        "skrl_sac_cfg_entry_point": f"{agents.__name__}:skrl_sac_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-MidOcc-Continuous-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_midocc_env_cfg:JetautoVrRoboMidOccContinuousEnvCfg_PLAY",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_ddpg_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_cfg.yaml",
+        "skrl_ddpg_tuned_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_tuned_cfg.yaml",
+        "skrl_sac_cfg_entry_point": f"{agents.__name__}:skrl_sac_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-MidOcc-D-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_midocc_env_cfg:JetautoVrRoboMidOccDEnvCfg",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_ddpg_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_cfg.yaml",
+        "skrl_ddpg_tuned_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_tuned_cfg.yaml",
+        "skrl_sac_cfg_entry_point": f"{agents.__name__}:skrl_sac_vrrobo_cfg.yaml",
+        "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Jetauto-VRRobo-Manager-MidOcc-D-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jetauto_vrrobo_midocc_env_cfg:JetautoVrRoboMidOccDEnvCfg_PLAY",
+        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_cfg.yaml",
+        "skrl_ddpg_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_cfg.yaml",
+        "skrl_ddpg_tuned_cfg_entry_point": f"{agents.__name__}:skrl_ddpg_vrrobo_tuned_cfg.yaml",
+        "skrl_sac_cfg_entry_point": f"{agents.__name__}:skrl_sac_vrrobo_cfg.yaml",
         "skrl_lstm_cfg_entry_point": f"{agents.__name__}:skrl_ppo_vrrobo_lstm_cfg.yaml",
     },
 )

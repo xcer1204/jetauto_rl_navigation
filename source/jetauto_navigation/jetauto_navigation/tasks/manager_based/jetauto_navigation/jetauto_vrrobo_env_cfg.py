@@ -40,7 +40,7 @@ class JetautoVrRoboSceneCfg(InteractiveSceneCfg):
 
     ground = AssetBaseCfg(
         prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(40.0, 40.0)),
+        spawn=sim_utils.GroundPlaneCfg(size=(40.0, 40.0), color=None, physics_material=None),
     )
 
     # robot: ArticulationCfg = JETAUTO_CONFIG.replace(prim_path="{ENV_REGEX_NS}/Robot")

@@ -172,10 +172,21 @@ class gs_image_feature(ManagerTermBase):
 
     def __init__(self, cfg: ObservationTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
-        print("[gs_image_feature] Connecting to render server on localhost:18861...")
-        self.conn = rpyc.connect("localhost", 18861, config={"allow_pickle": True, "allow_public_attrs": True})
+        self.render_server_host = str(cfg.params.get("render_server_host", "localhost"))
+        self.render_server_port = int(cfg.params.get("render_server_port", 18861))
+        self.rgb_socket_host = str(cfg.params.get("rgb_socket_host", "localhost"))
+        self.rgb_socket_port = int(cfg.params.get("rgb_socket_port", 12345))
+        print(
+            "[gs_image_feature] Connecting to render server on "
+            f"{self.render_server_host}:{self.render_server_port}..."
+        )
+        self.conn = rpyc.connect(
+            self.render_server_host,
+            self.render_server_port,
+            config={"allow_pickle": True, "allow_public_attrs": True},
+        )
         print("[gs_image_feature] Render server connected.")
-        self.image_server = GSServer()
+        self.image_server = GSServer(host=self.rgb_socket_host, port=self.rgb_socket_port)
         self.image_server.start()
         self.image_server.init_data(env.num_envs, h=180, w=320)
         print("[gs_image_feature] RGB socket receiver ready.")

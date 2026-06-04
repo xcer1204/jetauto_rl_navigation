@@ -11,6 +11,7 @@ from typing import Any
 
 from isaaclab.app import AppLauncher
 import numpy as np
+from PIL import Image
 
 try:
     from tqdm.auto import tqdm
@@ -21,6 +22,12 @@ except ImportError:
 parser = argparse.ArgumentParser(description="Play a GS-based Jetauto checkpoint with skrl.")
 parser.add_argument("--video", action="store_true", default=False, help="Record a rollout video.")
 parser.add_argument("--video_length", type=int, default=200, help="Recorded video length in steps.")
+parser.add_argument(
+    "--save_paired_views",
+    action="store_true",
+    default=False,
+    help="Save top-down renders and robot-view RGB images with the same step index.",
+)
 parser.add_argument(
     "--disable_fabric",
     action="store_true",
@@ -56,6 +63,10 @@ parser.add_argument(
     default=False,
     help="Use the full policy vector if the requested policy term is not found.",
 )
+parser.add_argument("--render_server_host", type=str, default=None, help="Override the GS render server host.")
+parser.add_argument("--render_server_port", type=int, default=None, help="Override the GS render server RPC port.")
+parser.add_argument("--rgb_socket_host", type=str, default=None, help="Override the GS RGB receiver host.")
+parser.add_argument("--rgb_socket_port", type=int, default=None, help="Override the GS RGB receiver TCP port.")
 parser.add_argument("--real_time", action="store_true", default=False, help="Throttle playback to real-time.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -264,6 +275,61 @@ def _override_policy_term_history_len(env_cfg, policy_term_name: str, history_le
     print(
         "[play_gs] Overriding policy term history "
         f"term={policy_term_name} previous={previous} current={params['history_len']}",
+        flush=True,
+    )
+    return True
+
+
+def _override_policy_term_network_endpoints(
+    env_cfg,
+    policy_term_name: str,
+    render_server_host: str | None,
+    render_server_port: int | None,
+    rgb_socket_host: str | None,
+    rgb_socket_port: int | None,
+) -> bool:
+    overrides = {}
+    if render_server_host is not None:
+        overrides["render_server_host"] = str(render_server_host)
+    if render_server_port is not None:
+        overrides["render_server_port"] = int(render_server_port)
+    if rgb_socket_host is not None:
+        overrides["rgb_socket_host"] = str(rgb_socket_host)
+    if rgb_socket_port is not None:
+        overrides["rgb_socket_port"] = int(rgb_socket_port)
+    if not overrides:
+        return False
+
+    observations_cfg = getattr(env_cfg, "observations", None)
+    policy_cfg = getattr(observations_cfg, "policy", None) if observations_cfg is not None else None
+    if policy_cfg is None:
+        return False
+
+    term_cfg = None
+    selected_name = None
+    for candidate in dict.fromkeys([policy_term_name, "gs_image"]):
+        if not candidate:
+            continue
+        term_cfg = getattr(policy_cfg, candidate, None)
+        if term_cfg is not None:
+            selected_name = candidate
+            break
+    if term_cfg is None:
+        return False
+
+    params = getattr(term_cfg, "params", None)
+    if params is None:
+        params = {}
+        setattr(term_cfg, "params", params)
+    elif not isinstance(params, dict):
+        params = dict(params)
+        setattr(term_cfg, "params", params)
+
+    previous = {key: params.get(key) for key in overrides}
+    params.update(overrides)
+    print(
+        "[play_gs] Overriding GS network endpoints "
+        f"term={selected_name} previous={previous} current={overrides}",
         flush=True,
     )
     return True
@@ -484,6 +550,52 @@ def _probe_render_frame(base_env, step: str | int, state: dict[str, Any]) -> Non
     state["consecutive_black"] = 0
 
 
+def _resolve_observation_term_instance(base_env, group_name: str, term_name: str):
+    obs_manager = getattr(base_env, "observation_manager", None)
+    if obs_manager is None:
+        return None
+    group_names = getattr(obs_manager, "_group_obs_term_names", {})
+    group_cfgs = getattr(obs_manager, "_group_obs_term_cfgs", {})
+    if group_name not in group_names or group_name not in group_cfgs:
+        return None
+    for name, term_cfg in zip(group_names[group_name], group_cfgs[group_name]):
+        if name == term_name:
+            return getattr(term_cfg, "func", None)
+    return None
+
+
+def _configure_paired_view_dirs(log_dir: str, playback_run_name: str) -> dict[str, Path]:
+    base_dir = Path(log_dir) / "paired_views" / playback_run_name
+    topdown_dir = base_dir / "topdown"
+    egoview_dir = base_dir / "egoview"
+    topdown_dir.mkdir(parents=True, exist_ok=True)
+    egoview_dir.mkdir(parents=True, exist_ok=True)
+    return {"base": base_dir, "topdown": topdown_dir, "egoview": egoview_dir}
+
+
+def _save_paired_views(
+    *,
+    base_env,
+    obs_term_instance,
+    paired_dirs: dict[str, Path],
+    step_index: int,
+    env_index: int = 0,
+) -> bool:
+    frame = base_env.render()
+    if not isinstance(frame, np.ndarray) or frame.size == 0:
+        return False
+    images_np = getattr(obs_term_instance, "latest_images_np", None)
+    if not isinstance(images_np, np.ndarray) or images_np.ndim != 2 or images_np.shape[0] == 0:
+        return False
+    env_index = min(max(int(env_index), 0), images_np.shape[0] - 1)
+    robot_img = images_np[env_index].reshape(3, 180, 320).transpose(1, 2, 0)
+    topdown_path = paired_dirs["topdown"] / f"step{step_index:06d}.png"
+    egoview_path = paired_dirs["egoview"] / f"step{step_index:06d}.png"
+    Image.fromarray(frame).save(topdown_path)
+    Image.fromarray(robot_img).save(egoview_path)
+    return True
+
+
 def main():
     env = None
     progress_bar = None
@@ -504,6 +616,27 @@ def main():
                 f"because term '{args_cli.policy_term}' was not found in env_cfg.observations.policy.",
                 flush=True,
             )
+    if not _override_policy_term_network_endpoints(
+        env_cfg,
+        args_cli.policy_term,
+        args_cli.render_server_host,
+        args_cli.render_server_port,
+        args_cli.rgb_socket_host,
+        args_cli.rgb_socket_port,
+    ) and any(
+        value is not None
+        for value in (
+            args_cli.render_server_host,
+            args_cli.render_server_port,
+            args_cli.rgb_socket_host,
+            args_cli.rgb_socket_port,
+        )
+    ):
+        print(
+            "[play_gs] GS network endpoint override skipped "
+            f"because neither '{args_cli.policy_term}' nor 'gs_image' was found in env_cfg.observations.policy.",
+            flush=True,
+        )
 
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
@@ -535,15 +668,26 @@ def main():
     debug_image_dir = _configure_debug_image_save_dir(env_cfg, args_cli.policy_term, playback_run_name)
     if debug_image_dir is not None:
         print(f"[INFO] Playback GS images will be saved under: {debug_image_dir}")
+    paired_view_dirs = _configure_paired_view_dirs(log_dir, playback_run_name) if args_cli.save_paired_views else None
+    if paired_view_dirs is not None:
+        print(f"[INFO] Paired top-down/ego-view frames will be saved under: {paired_view_dirs['base']}")
 
     try:
-        env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+        render_mode = "rgb_array" if (args_cli.video or args_cli.save_paired_views) else None
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
 
         if isinstance(env.unwrapped, DirectMARLEnv):
             env = multi_agent_to_single_agent(env)
 
         base_render_env = env.unwrapped
         policy_term_name = _resolve_policy_term(base_render_env, args_cli.policy_term, args_cli.full_policy_fallback)
+        obs_term_instance = (
+            _resolve_observation_term_instance(base_render_env, "policy", policy_term_name) if args_cli.save_paired_views else None
+        )
+        if args_cli.save_paired_views and obs_term_instance is None:
+            raise RuntimeError(
+                f"Unable to resolve observation term instance for group='policy', term='{policy_term_name}'."
+            )
 
         try:
             step_dt = env.step_dt
@@ -572,18 +716,34 @@ def main():
         agent.load(checkpoint_path)
         agent.set_running_mode("eval")
 
-        progress_total = args_cli.video_length if args_cli.video else None
-        progress_desc = "Recording" if args_cli.video else "Playback"
+        progress_total = args_cli.video_length if (args_cli.video or args_cli.save_paired_views) else None
+        progress_desc = "Recording" if args_cli.video else ("Saving Pairs" if args_cli.save_paired_views else "Playback")
         progress_bar = _create_progress_bar(progress_total, progress_desc)
 
         obs, _ = env.reset()
         render_probe_state: dict[str, Any] = {}
         if args_cli.video:
             _probe_render_frame(base_render_env, "reset", render_probe_state)
+        if paired_view_dirs is not None:
+            saved_reset = _save_paired_views(
+                base_env=base_render_env,
+                obs_term_instance=obs_term_instance,
+                paired_dirs=paired_view_dirs,
+                step_index=0,
+            )
+            if saved_reset:
+                print("[INFO] Saved paired views for reset step=0.", flush=True)
+            if not saved_reset:
+                print("[WARN] Failed to save paired views for reset step.", flush=True)
 
         rollout_start_time = time.time()
         timestep = 0
-        while simulation_app.is_running():
+        max_steps = args_cli.video_length if (args_cli.video or args_cli.save_paired_views) else None
+        while True:
+            if max_steps is not None and timestep >= max_steps:
+                break
+            if max_steps is None and not simulation_app.is_running():
+                break
             start_time = time.time()
             with torch.inference_mode():
                 outputs = agent.act(obs, timestep=0, timesteps=0)
@@ -597,6 +757,17 @@ def main():
                 _advance_eval_rnn_state(agent, terminated, truncated)
 
             timestep += 1
+            if paired_view_dirs is not None:
+                saved_pair = _save_paired_views(
+                    base_env=base_render_env,
+                    obs_term_instance=obs_term_instance,
+                    paired_dirs=paired_view_dirs,
+                    step_index=timestep,
+                )
+                if saved_pair and timestep <= 3:
+                    print(f"[INFO] Saved paired views for step={timestep}.", flush=True)
+                if not saved_pair and timestep <= 3:
+                    print(f"[WARN] Failed to save paired views at step={timestep}.", flush=True)
 
             if args_cli.video and _should_probe_render_frame(timestep):
                 _probe_render_frame(base_render_env, timestep, render_probe_state)
@@ -606,9 +777,6 @@ def main():
                 if timestep == 1 or timestep % 10 == 0:
                     elapsed = max(time.time() - rollout_start_time, 1e-6)
                     progress_bar.set_postfix_str(f"{timestep / elapsed:.1f} step/s")
-
-            if args_cli.video and timestep >= args_cli.video_length:
-                break
 
             sleep_time = step_dt - (time.time() - start_time)
             if args_cli.real_time and sleep_time > 0:

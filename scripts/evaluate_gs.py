@@ -6,6 +6,7 @@ import json
 import os
 import random
 import time
+import traceback
 from datetime import datetime
 from typing import Any
 
@@ -78,6 +79,10 @@ parser.add_argument(
     default=None,
     help="Optional path to save evaluation metrics as JSON.",
 )
+parser.add_argument("--render_server_host", type=str, default=None, help="Override the GS render server host.")
+parser.add_argument("--render_server_port", type=int, default=None, help="Override the GS render server RPC port.")
+parser.add_argument("--rgb_socket_host", type=str, default=None, help="Override the GS RGB receiver host.")
+parser.add_argument("--rgb_socket_port", type=int, default=None, help="Override the GS RGB receiver TCP port.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -286,6 +291,61 @@ def _override_policy_term_history_len(env_cfg, policy_term_name: str, history_le
     return True
 
 
+def _override_policy_term_network_endpoints(
+    env_cfg,
+    policy_term_name: str,
+    render_server_host: str | None,
+    render_server_port: int | None,
+    rgb_socket_host: str | None,
+    rgb_socket_port: int | None,
+) -> bool:
+    overrides = {}
+    if render_server_host is not None:
+        overrides["render_server_host"] = str(render_server_host)
+    if render_server_port is not None:
+        overrides["render_server_port"] = int(render_server_port)
+    if rgb_socket_host is not None:
+        overrides["rgb_socket_host"] = str(rgb_socket_host)
+    if rgb_socket_port is not None:
+        overrides["rgb_socket_port"] = int(rgb_socket_port)
+    if not overrides:
+        return False
+
+    observations_cfg = getattr(env_cfg, "observations", None)
+    policy_cfg = getattr(observations_cfg, "policy", None) if observations_cfg is not None else None
+    if policy_cfg is None:
+        return False
+
+    term_cfg = None
+    selected_name = None
+    for candidate in dict.fromkeys([policy_term_name, "gs_image"]):
+        if not candidate:
+            continue
+        term_cfg = getattr(policy_cfg, candidate, None)
+        if term_cfg is not None:
+            selected_name = candidate
+            break
+    if term_cfg is None:
+        return False
+
+    params = getattr(term_cfg, "params", None)
+    if params is None:
+        params = {}
+        setattr(term_cfg, "params", params)
+    elif not isinstance(params, dict):
+        params = dict(params)
+        setattr(term_cfg, "params", params)
+
+    previous = {key: params.get(key) for key in overrides}
+    params.update(overrides)
+    print(
+        "[evaluate_gs] Overriding GS network endpoints "
+        f"term={selected_name} previous={previous} current={overrides}",
+        flush=True,
+    )
+    return True
+
+
 def _get_policy_terms(base_env) -> list[str]:
     obs_manager = getattr(base_env, "observation_manager", None)
     if obs_manager is None:
@@ -422,7 +482,13 @@ def _build_eval_agent(env, agent_cfg: dict[str, Any]):
     agent_class = str(agent_cfg.get("agent", {}).get("class", "")).lower()
     if agent_class != "ppo_rnn":
         runner = Runner(env, agent_cfg)
-        return runner.agent
+        # Keep the Runner alive for the whole evaluation lifetime. Some skrl
+        # components (trainer/agent preprocessors) are owned by the runner tree.
+        # Returning only runner.agent can let the runner be garbage collected
+        # immediately, which can prematurely tear down the eval path.
+        agent = runner.agent
+        setattr(agent, "_eval_runner", runner)
+        return agent
 
     if not args_cli.ml_framework.startswith("torch"):
         raise RuntimeError("PPO_RNN evaluation in evaluate_gs.py currently supports only the torch backend.")
@@ -500,6 +566,27 @@ def main():
                 f"because term '{args_cli.policy_term}' was not found in env_cfg.observations.policy.",
                 flush=True,
             )
+    if not _override_policy_term_network_endpoints(
+        env_cfg,
+        args_cli.policy_term,
+        args_cli.render_server_host,
+        args_cli.render_server_port,
+        args_cli.rgb_socket_host,
+        args_cli.rgb_socket_port,
+    ) and any(
+        value is not None
+        for value in (
+            args_cli.render_server_host,
+            args_cli.render_server_port,
+            args_cli.rgb_socket_host,
+            args_cli.rgb_socket_port,
+        )
+    ):
+        print(
+            "[evaluate_gs] GS network endpoint override skipped "
+            f"because neither '{args_cli.policy_term}' nor 'gs_image' was found in env_cfg.observations.policy.",
+            flush=True,
+        )
 
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
@@ -528,25 +615,45 @@ def main():
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
     print(f"[INFO] Loading model checkpoint from: {checkpoint_path}")
 
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    print("[evaluate_gs] Creating gym environment...", flush=True)
+    try:
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    except BaseException as exc:
+        print(
+            f"[evaluate_gs] gym.make raised {type(exc).__name__}: {exc!r}",
+            flush=True,
+        )
+        print(traceback.format_exc(), flush=True)
+        raise
+    print("[evaluate_gs] gym environment created.", flush=True)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
+        print("[evaluate_gs] Converted DirectMARLEnv to single-agent wrapper.", flush=True)
 
     policy_term_name = _resolve_policy_term(env.unwrapped, args_cli.policy_term, args_cli.full_policy_fallback)
     success_class_name, x_limits, y_limits = _resolve_eval_settings(env_cfg)
     print(f"[INFO] Evaluation success class: {success_class_name}")
     print(f"[INFO] Evaluation bounds: x={x_limits}, y={y_limits}")
 
+    print("[evaluate_gs] Wrapping env with GSEnvWrapper...", flush=True)
     env = GSEnvWrapper(
         env,
         policy_term_name=policy_term_name,
         fallback_to_full_policy=args_cli.full_policy_fallback,
     )
+    print("[evaluate_gs] GSEnvWrapper ready.", flush=True)
+    print("[evaluate_gs] Wrapping env with SkrlVecEnvWrapper...", flush=True)
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
+    print("[evaluate_gs] SkrlVecEnvWrapper ready.", flush=True)
 
+    print("[evaluate_gs] Building eval agent...", flush=True)
     agent = _build_eval_agent(env, agent_cfg)
+    print("[evaluate_gs] Eval agent built.", flush=True)
+    print("[evaluate_gs] Loading checkpoint into agent...", flush=True)
     agent.load(checkpoint_path)
+    print("[evaluate_gs] Agent checkpoint loaded.", flush=True)
     agent.set_running_mode("eval")
+    print("[evaluate_gs] Agent set to eval mode.", flush=True)
 
     num_envs = int(getattr(env.unwrapped, "num_envs", getattr(env, "num_envs", 1)))
     device = getattr(env.unwrapped, "device", "cpu")
@@ -560,9 +667,10 @@ def main():
     finished_success: list[int] = []
     reason_counter = {"success": 0, "out_of_bounds": 0, "time_out": 0, "other_terminated": 0}
 
+    print("[evaluate_gs] Resetting environment...", flush=True)
     obs, _ = env.reset()
+    print("[evaluate_gs] Environment reset complete.", flush=True)
     eval_started_at = time.time()
-
     while simulation_app.is_running() and len(finished_returns) < args_cli.episodes:
         with torch.inference_mode():
             outputs = agent.act(obs, timestep=0, timesteps=0)

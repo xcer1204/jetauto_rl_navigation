@@ -137,6 +137,7 @@ class gs_look_at_target_image_feature(gs_image_feature):
         self.save_env_index = int(cfg.params.get("save_env_index", 0))
         self._obs_step = 0
         self._saved_count = 0
+        self.latest_images_np: np.ndarray | None = None
         self.save_dir = Path(cfg.params.get("save_dir", "logs/midocc_gs_render_debug"))
         if self.save_debug_images:
             self.save_dir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +347,7 @@ class gs_look_at_target_image_feature(gs_image_feature):
             raise
         if not isinstance(images_np, np.ndarray) or images_np.shape != (env.num_envs, 3 * 180 * 320):
             self._log_debug_context("midocc_unexpected_image_buffer", env, images_np=images_np)
+        self.latest_images_np = images_np.copy()
         self._maybe_save_debug_image(images_np)
         if self.save_debug_masks and not self._mask_api_warned:
             print("[midocc_gs_image_feature] save_debug_masks is ignored by the RGB-only render server.")

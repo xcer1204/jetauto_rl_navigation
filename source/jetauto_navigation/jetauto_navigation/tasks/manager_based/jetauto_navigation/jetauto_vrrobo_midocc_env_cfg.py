@@ -36,6 +36,9 @@ MIDOCC_Y_LIMITS = (0.0, 2.32)
 MIDOCC_YAW_LIMITS = (-math.radians(90.0), math.radians(90.0))
 MIDOCC_CAMERA_SAMPLING_MODE = "world_xy_yaw"
 MIDOCC_CAMERA_ROT_DEG = (0.0, 0.0, 0.0)
+MIDOCCD_LIN_XY_STEP = (0.02, 0.02)
+MIDOCCD_YAW_STEP = math.radians(5.0)
+MIDOCCD_EPISODE_LENGTH_S = 25.0
 MIDOCC_INITIAL_X = 0.5 * (MIDOCC_X_SAMPLING_RANGES[0][0] + MIDOCC_X_SAMPLING_RANGES[0][1])
 MIDOCC_INITIAL_Y = 0.5 * (MIDOCC_Y_SAMPLING_RANGES[0][0] + MIDOCC_Y_SAMPLING_RANGES[0][1])
 MIDOCC_WALL_THICKNESS = 0.01
@@ -57,7 +60,7 @@ class JetautoVrRoboMidOccSceneCfg(InteractiveSceneCfg):
 
     ground = AssetBaseCfg(
         prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(120.0, 120.0)),
+        spawn=sim_utils.GroundPlaneCfg(size=(120.0, 120.0), color=None, physics_material=None),
     )
 
     robot: ArticulationCfg = JETAUTO_CONFIG.replace(
@@ -203,6 +206,32 @@ class ActionsCfg:
 
 
 @configclass
+class ContinuousActionsCfg:
+    planar_vel = midocc_mdp.PlanarPoseContinuousActionCfg(
+        asset_name="robot",
+        lin_xy_step=(0.08, 0.08),
+        yaw_step=math.radians(15.0),
+        z_lock=MIDOCC_ROBOT_Z,
+        x_limits=MIDOCC_X_LIMITS,
+        y_limits=MIDOCC_Y_LIMITS,
+        yaw_limits=MIDOCC_YAW_LIMITS,
+    )
+
+
+@configclass
+class ContinuousDDActionsCfg:
+    planar_vel = midocc_mdp.PlanarPoseContinuousActionCfg(
+        asset_name="robot",
+        lin_xy_step=MIDOCCD_LIN_XY_STEP,
+        yaw_step=MIDOCCD_YAW_STEP,
+        z_lock=MIDOCC_ROBOT_Z,
+        x_limits=MIDOCC_X_LIMITS,
+        y_limits=MIDOCC_Y_LIMITS,
+        yaw_limits=MIDOCC_YAW_LIMITS,
+    )
+
+
+@configclass
 class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
@@ -340,3 +369,45 @@ class JetautoVrRoboMidOccEnvCfg_PLAY(JetautoVrRoboMidOccEnvCfg):
         self.observations.policy.gs_image.params["save_max_images"] = 200
         self.observations.policy.gs_image.params["save_env_index"] = 0
         self.observations.policy.gs_image.params["save_dir"] = "logs/midocc_gs_render_debug_play"
+
+
+@configclass
+class JetautoVrRoboMidOccContinuousEnvCfg(JetautoVrRoboMidOccEnvCfg):
+    actions: ContinuousActionsCfg = ContinuousActionsCfg()
+
+
+@configclass
+class JetautoVrRoboMidOccContinuousEnvCfg_PLAY(JetautoVrRoboMidOccContinuousEnvCfg):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.scene.env_spacing = 4.0
+        self.observations.policy.enable_corruption = False
+        self.observations.policy.gs_image.params["save_debug_images"] = True
+        self.observations.policy.gs_image.params["save_every_n_steps"] = 1
+        self.observations.policy.gs_image.params["save_max_images"] = 200
+        self.observations.policy.gs_image.params["save_env_index"] = 0
+        self.observations.policy.gs_image.params["save_dir"] = "logs/midocc_continuous_gs_render_debug_play"
+
+
+@configclass
+class JetautoVrRoboMidOccDEnvCfg(JetautoVrRoboMidOccEnvCfg):
+    actions: ContinuousDDActionsCfg = ContinuousDDActionsCfg()
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.episode_length_s = MIDOCCD_EPISODE_LENGTH_S
+
+
+@configclass
+class JetautoVrRoboMidOccDEnvCfg_PLAY(JetautoVrRoboMidOccDEnvCfg):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.scene.env_spacing = 4.0
+        self.observations.policy.enable_corruption = False
+        self.observations.policy.gs_image.params["save_debug_images"] = True
+        self.observations.policy.gs_image.params["save_every_n_steps"] = 1
+        self.observations.policy.gs_image.params["save_max_images"] = 300
+        self.observations.policy.gs_image.params["save_env_index"] = 0
+        self.observations.policy.gs_image.params["save_dir"] = "logs/midocc_d_gs_render_debug_play"

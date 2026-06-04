@@ -25,7 +25,12 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, help="Training seed. Use -1 for a random seed.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint path used to resume training.")
-parser.add_argument("--max_iterations", type=int, default=None, help="Override the PPO iteration count.")
+parser.add_argument(
+    "--max_iterations",
+    type=int,
+    default=None,
+    help="Override training length. For rollout-based agents this is iterations; otherwise it is timesteps.",
+)
 parser.add_argument(
     "--ml_framework",
     type=str,
@@ -45,6 +50,10 @@ parser.add_argument(
     default=False,
     help="Use the full policy vector if the requested policy term is not found.",
 )
+parser.add_argument("--render_server_host", type=str, default=None, help="Override the GS render server host.")
+parser.add_argument("--render_server_port", type=int, default=None, help="Override the GS render server RPC port.")
+parser.add_argument("--rgb_socket_host", type=str, default=None, help="Override the GS RGB receiver host.")
+parser.add_argument("--rgb_socket_port", type=int, default=None, help="Override the GS RGB receiver TCP port.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -273,6 +282,61 @@ def _override_policy_term_history_len(env_cfg, policy_term_name: str, history_le
     return True
 
 
+def _override_policy_term_network_endpoints(
+    env_cfg,
+    policy_term_name: str,
+    render_server_host: str | None,
+    render_server_port: int | None,
+    rgb_socket_host: str | None,
+    rgb_socket_port: int | None,
+) -> bool:
+    overrides = {}
+    if render_server_host is not None:
+        overrides["render_server_host"] = str(render_server_host)
+    if render_server_port is not None:
+        overrides["render_server_port"] = int(render_server_port)
+    if rgb_socket_host is not None:
+        overrides["rgb_socket_host"] = str(rgb_socket_host)
+    if rgb_socket_port is not None:
+        overrides["rgb_socket_port"] = int(rgb_socket_port)
+    if not overrides:
+        return False
+
+    observations_cfg = getattr(env_cfg, "observations", None)
+    policy_cfg = getattr(observations_cfg, "policy", None) if observations_cfg is not None else None
+    if policy_cfg is None:
+        return False
+
+    term_cfg = None
+    selected_name = None
+    for candidate in dict.fromkeys([policy_term_name, "gs_image"]):
+        if not candidate:
+            continue
+        term_cfg = getattr(policy_cfg, candidate, None)
+        if term_cfg is not None:
+            selected_name = candidate
+            break
+    if term_cfg is None:
+        return False
+
+    params = getattr(term_cfg, "params", None)
+    if params is None:
+        params = {}
+        setattr(term_cfg, "params", params)
+    elif not isinstance(params, dict):
+        params = dict(params)
+        setattr(term_cfg, "params", params)
+
+    previous = {key: params.get(key) for key in overrides}
+    params.update(overrides)
+    print(
+        "[train_gs] Overriding GS network endpoints "
+        f"term={selected_name} previous={previous} current={overrides}",
+        flush=True,
+    )
+    return True
+
+
 def _run_ppo_rnn_training(env, agent_cfg: dict[str, Any], resume_path: str | None, startup_cuda_summary: str | None):
     if not args_cli.ml_framework.startswith("torch"):
         raise RuntimeError("PPO_RNN training in train_gs.py currently supports only the torch backend.")
@@ -353,6 +417,27 @@ def main():
                 f"because term '{args_cli.policy_term}' was not found in env_cfg.observations.policy.",
                 flush=True,
             )
+    if not _override_policy_term_network_endpoints(
+        env_cfg,
+        args_cli.policy_term,
+        args_cli.render_server_host,
+        args_cli.render_server_port,
+        args_cli.rgb_socket_host,
+        args_cli.rgb_socket_port,
+    ) and any(
+        value is not None
+        for value in (
+            args_cli.render_server_host,
+            args_cli.render_server_port,
+            args_cli.rgb_socket_host,
+            args_cli.rgb_socket_port,
+        )
+    ):
+        print(
+            "[train_gs] GS network endpoint override skipped "
+            f"because neither '{args_cli.policy_term}' nor 'gs_image' was found in env_cfg.observations.policy.",
+            flush=True,
+        )
 
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
@@ -365,8 +450,11 @@ def main():
     env_cfg.seed = seed
 
     if args_cli.max_iterations is not None:
-        rollouts = int(agent_cfg["agent"]["rollouts"])
-        agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * rollouts
+        if "rollouts" in agent_cfg.get("agent", {}):
+            rollouts = int(agent_cfg["agent"]["rollouts"])
+            agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * rollouts
+        else:
+            agent_cfg["trainer"]["timesteps"] = int(args_cli.max_iterations)
     agent_cfg["trainer"]["close_environment_at_exit"] = False
 
     algorithm = _resolve_algorithm_name(args_cli.agent)
