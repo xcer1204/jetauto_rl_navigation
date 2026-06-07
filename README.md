@@ -1,6 +1,6 @@
-# JetAuto RL Navigation
+# LoSNav-3DGS
 
-Simulation-to-real visual navigation for a JetAuto mecanum robot using aligned 3D Gaussian Splatting, multitask occlusion perception, and recurrent reinforcement learning.
+Robot-assisted line-of-sight link recovery with 3D Gaussian Splatting, multitask visual occlusion perception, and recurrent reinforcement learning on a JetAuto mobile robot.
 
 <p align="center">
   <a href="https://xcer1204.github.io/jetauto_rl_navigation/">
@@ -16,7 +16,7 @@ Simulation-to-real visual navigation for a JetAuto mecanum robot using aligned 3
 
 ## Overview
 
-This repository contains the Isaac Lab side of a JetAuto navigation project built around a visibility-aware sim-to-real pipeline:
+This repository contains the Isaac Lab side of LoSNav-3DGS, a communication-aware robot navigation project built around visibility-driven LoS recovery:
 
 - Real indoor scenes are reconstructed with 3DGS and aligned to Isaac Lab.
 - A multitask DeepLab branch predicts visible target masks, occlusion classes, and reusable visual features.
@@ -136,3 +136,4 @@ python scripts/evaluate_gs.py \
 
 - The project page is the best place to present the video, figures, and explanation together.
 - The embedded demo video is used directly from the recorded real-robot run.
+
