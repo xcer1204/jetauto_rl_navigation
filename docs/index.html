@@ -6,7 +6,7 @@
   <title>JetAuto RL Navigation</title>
   <meta
     name="description"
-    content="Simulation-to-real JetAuto navigation with 3DGS scene alignment, multitask occlusion perception, and recurrent reinforcement learning."
+    content="Communication-aware JetAuto navigation for line-of-sight link recovery using 3DGS scene alignment, multitask occlusion perception, and recurrent reinforcement learning."
   >
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -489,6 +489,7 @@
       </div>
       <nav class="nav">
         <a href="#demo">Demo</a>
+        <a href="#objective">Objective</a>
         <a href="#pipeline">Pipeline</a>
         <a href="#results">Results</a>
         <a href="#run">Run</a>
@@ -498,12 +499,13 @@
 
     <section class="hero">
       <div class="hero-copy">
-        <div class="eyebrow">Simulation to Real Visual Navigation</div>
-        <h1>JetAuto learns to recover visibility before it commits to motion.</h1>
+        <div class="eyebrow">Communication-Aware LoS Recovery</div>
+        <h1>JetAuto navigation for line-of-sight link recovery.</h1>
         <p class="lead">
-          This project combines aligned 3D Gaussian Splatting scene reconstruction, multitask visibility prediction,
-          and a recurrent PPO policy for robot-view navigation under target occlusion. The page below ties the
-          technical pipeline to a real JetAuto rollout with frame-level occlusion analytics.
+          This project studies how a mobile robot can actively move from blocked indoor viewpoints toward
+          positions that are more favorable for wireless line-of-sight communication. The implementation combines
+          3D Gaussian Splatting scene reconstruction, multitask visual occlusion perception, and a recurrent
+          PPO policy in Isaac Lab.
         </p>
 
         <div class="actions">
@@ -513,16 +515,16 @@
 
         <div class="hero-facts">
           <div class="fact">
-            <span class="label">Robot platform</span>
-            <strong>JetAuto mecanum base with robot-view RGB camera</strong>
+            <span class="label">Main objective</span>
+            <strong>Recover lower-occlusion viewpoints for LoS communication</strong>
           </div>
           <div class="fact">
-            <span class="label">Perception branch</span>
-            <strong>Visible-target segmentation plus 5-way occlusion classification</strong>
+            <span class="label">Visual proxy</span>
+            <strong>Visible-target masks and 5-bin occlusion classes</strong>
           </div>
           <div class="fact">
-            <span class="label">Control policy</span>
-            <strong>PPO-LSTM using learned visual features from the multitask backbone</strong>
+            <span class="label">Policy</span>
+            <strong>PPO-LSTM over learned visual features and short histories</strong>
           </div>
         </div>
       </div>
@@ -532,43 +534,45 @@
           <source src="assets/video/real_robot_demo.mp4" type="video/mp4">
         </video>
         <p class="caption">
-          This is a direct real-robot rollout video from the JetAuto platform, embedded on the page without
-          any extra post-processing.
+          This real-robot rollout is embedded directly from the recorded MP4 file. The video is meant to show
+          the deployed JetAuto viewpoint and the practical rollout behavior, not a separately generated animation.
         </p>
       </div>
     </section>
 
-    <section class="section">
+    <section class="section" id="objective">
       <div class="section-header">
-        <h2>What the demo is showing</h2>
+        <h2>Task objective</h2>
         <p>
-          The policy is not chasing a raw goal marker alone. It is conditioned on a learned visibility signal,
-          so the robot first improves how well the target can be seen and then settles into a lower-occlusion view.
+          Indoor wireless links can fail when obstacles block the direct path between a transmitter and a receiver.
+          The task is therefore formulated as active visibility recovery: given a partially blocked robot-view
+          observation, learn a policy that moves JetAuto toward viewpoints where the communication target is less
+          occluded and more likely to support LoS transmission.
         </p>
       </div>
       <div class="cards">
         <article class="panel">
-          <span class="kicker">Step 1</span>
-          <h3>Start under heavy blockage</h3>
+          <span class="kicker">Problem</span>
+          <h3>Blockage hurts the link</h3>
           <p>
-            Early frames are dominated by the 80-100% bucket, indicating that the target is mostly hidden from
-            the robot-view camera.
+            Furniture and other indoor obstacles can turn an LoS path into an NLoS path, causing attenuation,
+            multipath distortion, and receiver decoding failures.
           </p>
         </article>
         <article class="panel">
-          <span class="kicker">Step 2</span>
+          <span class="kicker">Proxy</span>
           <h3>Use visibility as a proxy</h3>
           <p>
-            The multitask DeepLab branch predicts both an occlusion class and a reusable visual feature vector,
-            which becomes the policy's compact observation signal.
+            3DGS dual rendering produces geometry-grounded visibility labels, and the DeepLabv3+ model predicts
+            occlusion state from robot-view RGB images.
           </p>
         </article>
         <article class="panel">
-          <span class="kicker">Step 3</span>
-          <h3>Recover a clearer viewpoint</h3>
+          <span class="kicker">Control</span>
+          <h3>Move to recover LoS</h3>
           <p>
-            As the robot repositions, the predicted occlusion ratio drops and the trajectory converges toward
-            the lower-occlusion buckets associated with task success.
+            The PPO-LSTM policy uses the learned visual feature stream to choose planar motion commands that
+            drive the robot toward the 0-20% low-occlusion success class.
           </p>
         </article>
       </div>
@@ -577,11 +581,11 @@
     <section class="section" id="pipeline">
       <div class="wide-panel">
         <div class="section-header">
-          <h2>Pipeline: from real scene capture to policy rollout</h2>
+          <h2>Method pipeline</h2>
           <p>
             A real indoor scene is captured with multi-view RGB images, reconstructed with 3DGS, aligned to Isaac Lab,
-            and rendered from robot-like viewpoints. Those images supervise a multitask visibility model, whose features
-            are then consumed by a recurrent navigation policy.
+            and rendered from robot-like viewpoints. The same reconstruction is used to generate visibility supervision,
+            train the multitask perception model, and support recurrent RL training for JetAuto.
           </p>
         </div>
         <img src="assets/img/pipeline_overview.png" alt="Pipeline overview from real scene capture to 3DGS-aligned simulation and visibility estimation">
@@ -594,8 +598,9 @@
           <h2>Perception branch</h2>
           <p>
             The multitask model predicts a visible target mask and a five-class occlusion label while exposing
-            a high-level feature vector. This lets the policy reason about blockage without requiring an explicit
-            dense scene model at deployment time.
+            a high-level feature vector. On the main MidOcc test split, the perception model reaches a global Dice
+            score of 0.9515 and 97.28% occlusion classification accuracy, making it usable as the visual front-end
+            for downstream RL training.
           </p>
         </div>
         <img src="assets/img/perception_module.png" alt="Multitask perception module for target visibility and occlusion classification">
@@ -605,22 +610,39 @@
     <section class="section" id="results">
       <div class="wide-panel">
         <div class="section-header">
-          <h2>Real-robot snapshots</h2>
+          <h2>Current results</h2>
           <p>
-            These views show the same scene before and after visibility recovery. The left frame begins with stronger
-            target blockage, while the right frame reflects a cleaner observation geometry after the policy has adjusted
-            its pose.
+            The current implementation validates the perception and policy stages in the MidOcc simulation branch,
+            and uses the real JetAuto rollout plus the SDR platform as the bridge toward physical LoS/NLoS validation.
           </p>
+        </div>
+        <div class="stats">
+          <div class="stat">
+            <span>Perception Dice</span>
+            <strong>0.9515</strong>
+          </div>
+          <div class="stat">
+            <span>Occlusion accuracy</span>
+            <strong>97.28%</strong>
+          </div>
+          <div class="stat">
+            <span>Simulation success</span>
+            <strong>100%</strong>
+          </div>
+          <div class="stat">
+            <span>Mean steps</span>
+            <strong>5.23</strong>
+          </div>
         </div>
         <div class="image-grid">
           <div class="image-card">
-            <span class="kicker">Before</span>
-            <h3>Higher occlusion</h3>
+            <span class="kicker">Start</span>
+            <h3>Blocked viewpoint</h3>
             <img src="assets/img/real_before.png" alt="Real robot view before visibility recovery">
           </div>
           <div class="image-card">
-            <span class="kicker">After</span>
-            <h3>Improved visibility</h3>
+            <span class="kicker">Recovery</span>
+            <h3>Clearer viewpoint</h3>
             <img src="assets/img/real_after.png" alt="Real robot view after visibility recovery">
           </div>
         </div>
@@ -634,10 +656,10 @@
           <h3>Train the policy</h3>
           <p>
             The main recurrent training entry point is <code>scripts/train_gs.py</code> with
-            <code>Jetauto-VRRobo-Manager-v0</code> and <code>skrl_lstm_cfg_entry_point</code>.
+            <code>Jetauto-VRRobo-Manager-MidOcc-v0</code> and <code>skrl_lstm_cfg_entry_point</code>.
           </p>
           <pre>python scripts/train_gs.py \
-  --task Jetauto-VRRobo-Manager-v0 \
+  --task Jetauto-VRRobo-Manager-MidOcc-v0 \
   --agent skrl_lstm_cfg_entry_point \
   --policy_term gs_image</pre>
         </article>
@@ -648,7 +670,7 @@
             Use <code>scripts/play_gs.py</code> to replay a saved checkpoint in the manager-based play environment.
           </p>
           <pre>python scripts/play_gs.py \
-  --task Jetauto-VRRobo-Manager-Play-v0 \
+  --task Jetauto-VRRobo-Manager-MidOcc-Play-v0 \
   --agent skrl_lstm_cfg_entry_point \
   --checkpoint &lt;path-to-best_agent.pt&gt;</pre>
         </article>
@@ -659,7 +681,7 @@
             Use <code>scripts/evaluate_gs.py</code> for aggregate metrics, or the baseline evaluator for ablations.
           </p>
           <pre>python scripts/evaluate_gs.py \
-  --task Jetauto-VRRobo-Manager-Play-v0 \
+  --task Jetauto-VRRobo-Manager-MidOcc-Play-v0 \
   --agent skrl_lstm_cfg_entry_point \
   --checkpoint &lt;path-to-best_agent.pt&gt; \
   --episodes 100</pre>
