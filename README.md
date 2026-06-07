@@ -1,135 +1,138 @@
-# Template for Isaac Lab Projects
+# JetAuto RL Navigation
+
+Simulation-to-real visual navigation for a JetAuto mecanum robot using aligned 3D Gaussian Splatting, multitask occlusion perception, and recurrent reinforcement learning.
+
+<p align="center">
+  <a href="https://xcer1204.github.io/jetauto_rl_navigation/">
+    <img src="docs/assets/img/real_robot_demo_poster.jpg" alt="Real robot demo poster" width="760" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://xcer1204.github.io/jetauto_rl_navigation/">Project Page</a>
+  |
+  <a href="docs/assets/video/real_robot_demo.mp4">Demo Video</a>
+</p>
 
 ## Overview
 
-This project/repository serves as a template for building projects or extensions based on Isaac Lab.
-It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
+This repository contains the Isaac Lab side of a JetAuto navigation project built around a visibility-aware sim-to-real pipeline:
 
-**Key Features:**
+- Real indoor scenes are reconstructed with 3DGS and aligned to Isaac Lab.
+- A multitask DeepLab branch predicts visible target masks, occlusion classes, and reusable visual features.
+- A PPO-LSTM policy consumes those features to navigate under partial target blockage.
+- The learned policy is validated on a real JetAuto robot with a monocular robot-view camera.
 
-- `Isolation` Work outside the core Isaac Lab repository, ensuring that your development efforts remain self-contained.
-- `Flexibility` This template is set up to allow your code to be run as an extension in Omniverse.
+The repository focuses on training, playback, and evaluation in Isaac Lab, while the project page documents the real-robot rollout used for validation.
 
-**Keywords:** extension, template, isaaclab
+## Highlights
 
-## Installation
+- 3DGS-based scene reconstruction and simulation alignment for robot-view navigation.
+- Multitask perception with visible-target segmentation plus 5-bin occlusion classification.
+- Recurrent PPO policy for partially observable navigation.
+- Real-camera closed-loop rollout presented directly on the project page.
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-  We recommend using the conda or uv installation as it simplifies calling Python scripts from the terminal.
+## Project Page
 
-- Clone or copy this project/repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+The project page is stored in [`docs/`](docs/) and is intended for GitHub Pages:
 
-- Using a python interpreter that has Isaac Lab installed, install the library in editable mode using:
+- `docs/index.html`: landing page with embedded video and explanations
+- `docs/assets/img/`: figures and demo poster
+- `docs/assets/video/`: real-robot demo video used directly by the page
 
-    ```bash
-    # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-    python -m pip install -e source/jetauto_navigation
+Once GitHub Pages is enabled, the page URL will be:
 
-- Verify that the extension is correctly installed by:
+```text
+https://xcer1204.github.io/jetauto_rl_navigation/
+```
 
-    - Listing the available tasks:
+## Repository Layout
 
-        Note: It the task name changes, it may be necessary to update the search pattern `"Template-"`
-        (in the `scripts/list_envs.py` file) so that it can be listed.
+```text
+source/jetauto_navigation/jetauto_navigation/tasks/direct/
+source/jetauto_navigation/jetauto_navigation/tasks/manager_based/
+scripts/train_gs.py
+scripts/play_gs.py
+scripts/evaluate_gs.py
+scripts/evaluate_gs_baselines.py
+```
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/list_envs.py
-        ```
+- `direct/`: direct-control JetAuto environments
+- `manager_based/`: manager-based VR-Robo environments and observation/reward logic
+- `train_gs.py`: recurrent or feedforward skrl training entry point
+- `play_gs.py`: checkpoint playback and optional video recording
+- `evaluate_gs.py`: rollout evaluation with success and occlusion metrics
 
-    - Running a task:
+## Setup
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/<RL_LIBRARY>/train.py --task=<TASK_NAME>
-        ```
-
-    - Running a task with dummy agents:
-
-        These include dummy agents that output zero or random agents. They are useful to ensure that the environments are configured correctly.
-
-        - Zero-action agent
-
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/zero_agent.py --task=<TASK_NAME>
-            ```
-        - Random-action agent
-
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/random_agent.py --task=<TASK_NAME>
-            ```
-
-### Set up IDE (Optional)
-
-To setup the IDE, please follow these instructions:
-
-- Run VSCode Tasks, by pressing `Ctrl+Shift+P`, selecting `Tasks: Run Task` and running the `setup_python_env` in the drop down menu.
-  When running this task, you will be prompted to add the absolute path to your Isaac Sim installation.
-
-If everything executes correctly, it should create a file .python.env in the `.vscode` directory.
-The file contains the python paths to all the extensions provided by Isaac Sim and Omniverse.
-This helps in indexing all the python modules for intelligent suggestions while writing code.
-
-### Setup as Omniverse Extension (Optional)
-
-We provide an example UI extension that will load upon enabling your extension defined in `source/jetauto_navigation/jetauto_navigation/ui_extension_example.py`.
-
-To enable your extension, follow these steps:
-
-1. **Add the search path of this project/repository** to the extension manager:
-    - Navigate to the extension manager using `Window` -> `Extensions`.
-    - Click on the **Hamburger Icon**, then go to `Settings`.
-    - In the `Extension Search Paths`, enter the absolute path to the `source` directory of this project/repository.
-    - If not already present, in the `Extension Search Paths`, enter the path that leads to Isaac Lab's extension directory directory (`IsaacLab/source`)
-    - Click on the **Hamburger Icon**, then click `Refresh`.
-
-2. **Search and enable your extension**:
-    - Find your extension under the `Third Party` category.
-    - Toggle it to enable your extension.
-
-## Code formatting
-
-We have a pre-commit template to automatically format your code.
-To install pre-commit:
+1. Install Isaac Lab and Isaac Sim.
+2. Clone this repository outside the Isaac Lab source tree.
+3. Install the extension in editable mode:
 
 ```bash
-pip install pre-commit
+python -m pip install -e source/jetauto_navigation
 ```
 
-Then you can run pre-commit with:
+4. Update any machine-specific paths in the environment configs if needed, especially:
+
+- external 3DGS render server host and ports
+- DeepLab multitask checkpoint path
+- DeepLab project root path
+
+## Representative Commands
+
+List the registered JetAuto tasks:
 
 ```bash
-pre-commit run --all-files
+python scripts/list_envs.py
 ```
 
-## Troubleshooting
+Train the manager-based VR-Robo task with the recurrent skrl config:
 
-### Pylance Missing Indexing of Extensions
-
-In some VsCode versions, the indexing of part of the extensions is missing.
-In this case, add the path to your extension in `.vscode/settings.json` under the key `"python.analysis.extraPaths"`.
-
-```json
-{
-    "python.analysis.extraPaths": [
-        "<path-to-ext-repo>/source/jetauto_navigation"
-    ]
-}
+```bash
+python scripts/train_gs.py \
+  --task Jetauto-VRRobo-Manager-v0 \
+  --agent skrl_lstm_cfg_entry_point \
+  --policy_term gs_image
 ```
 
-### Pylance Crash
+Play a trained recurrent checkpoint:
 
-If you encounter a crash in `pylance`, it is probable that too many files are indexed and you run out of memory.
-A possible solution is to exclude some of omniverse packages that are not used in your project.
-To do so, modify `.vscode/settings.json` and comment out packages under the key `"python.analysis.extraPaths"`
-Some examples of packages that can likely be excluded are:
-
-```json
-"<path-to-isaac-sim>/extscache/omni.anim.*"         // Animation packages
-"<path-to-isaac-sim>/extscache/omni.kit.*"          // Kit UI tools
-"<path-to-isaac-sim>/extscache/omni.graph.*"        // Graph UI tools
-"<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
-...
+```bash
+python scripts/play_gs.py \
+  --task Jetauto-VRRobo-Manager-Play-v0 \
+  --agent skrl_lstm_cfg_entry_point \
+  --checkpoint <path-to-best_agent.pt>
 ```
+
+Evaluate a checkpoint over multiple episodes:
+
+```bash
+python scripts/evaluate_gs.py \
+  --task Jetauto-VRRobo-Manager-Play-v0 \
+  --agent skrl_lstm_cfg_entry_point \
+  --checkpoint <path-to-best_agent.pt> \
+  --episodes 100
+```
+
+## Figures
+
+### Pipeline Overview
+
+![Pipeline overview](docs/assets/img/pipeline_overview.png)
+
+### Perception Module
+
+![Perception module](docs/assets/img/perception_module.png)
+
+### Real-Robot Snapshots
+
+<p align="center">
+  <img src="docs/assets/img/real_before.png" alt="Before recovery" width="47%" />
+  <img src="docs/assets/img/real_after.png" alt="After recovery" width="47%" />
+</p>
+
+## Notes
+
+- The project page is the best place to present the video, figures, and explanation together.
+- The embedded demo video is used directly from the recorded real-robot run.
