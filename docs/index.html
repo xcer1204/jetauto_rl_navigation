@@ -492,7 +492,6 @@
         <a href="#objective">Objective</a>
         <a href="#pipeline">Pipeline</a>
         <a href="#results">Results</a>
-        <a href="#run">Run</a>
         <a href="https://github.com/xcer1204/jetauto_rl_navigation">Repository</a>
       </nav>
     </div>
@@ -646,46 +645,6 @@
             <img src="assets/img/real_after.png" alt="Real robot view after visibility recovery">
           </div>
         </div>
-      </div>
-    </section>
-
-    <section class="section" id="run">
-      <div class="cards">
-        <article class="panel">
-          <span class="kicker">Training</span>
-          <h3>Train the policy</h3>
-          <p>
-            The main recurrent training entry point is <code>scripts/train_gs.py</code> with
-            <code>Jetauto-VRRobo-Manager-MidOcc-v0</code> and <code>skrl_lstm_cfg_entry_point</code>.
-          </p>
-          <pre>python scripts/train_gs.py \
-  --task Jetauto-VRRobo-Manager-MidOcc-v0 \
-  --agent skrl_lstm_cfg_entry_point \
-  --policy_term gs_image</pre>
-        </article>
-        <article class="panel">
-          <span class="kicker">Playback</span>
-          <h3>Replay a checkpoint</h3>
-          <p>
-            Use <code>scripts/play_gs.py</code> to replay a saved checkpoint in the manager-based play environment.
-          </p>
-          <pre>python scripts/play_gs.py \
-  --task Jetauto-VRRobo-Manager-MidOcc-Play-v0 \
-  --agent skrl_lstm_cfg_entry_point \
-  --checkpoint &lt;path-to-best_agent.pt&gt;</pre>
-        </article>
-        <article class="panel">
-          <span class="kicker">Evaluation</span>
-          <h3>Measure rollout behavior</h3>
-          <p>
-            Use <code>scripts/evaluate_gs.py</code> for aggregate metrics, or the baseline evaluator for ablations.
-          </p>
-          <pre>python scripts/evaluate_gs.py \
-  --task Jetauto-VRRobo-Manager-MidOcc-Play-v0 \
-  --agent skrl_lstm_cfg_entry_point \
-  --checkpoint &lt;path-to-best_agent.pt&gt; \
-  --episodes 100</pre>
-        </article>
       </div>
     </section>
 
