@@ -128,8 +128,8 @@ python scripts/evaluate_gs.py \
 ### Real-Robot Snapshots
 
 <p align="center">
-  <img src="docs/assets/img/real_before.png" alt="Before recovery" width="47%" />
-  <img src="docs/assets/img/real_after.png" alt="After recovery" width="47%" />
+  <img src="docs/assets/img/blocked_viewpoint.png" alt="Blocked viewpoint" width="47%" />
+  <img src="docs/assets/img/clearer_viewpoint.png" alt="Clearer viewpoint" width="47%" />
 </p>
 
 ## Notes
